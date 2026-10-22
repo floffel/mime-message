@@ -157,3 +157,75 @@ impl CloneWithAttachment for Message {
         copy
     }
 }
+
+// --- Regressionen aus dem Review: diese drei Faelle waren defekt ---
+
+#[test]
+fn from_with_unordered_angle_brackets_does_not_panic() {
+    // "a>b<c@d" laesst rfind('>') vor find('<') liegen -> frueher Panik.
+    let result = std::panic::catch_unwind(|| {
+        let _ = Message::builder().from("a>b<c@d");
+    });
+    assert!(result.is_ok(), "Mailbox::parse darf nicht panicken");
+}
+
+#[test]
+fn content_type_cannot_inject_headers() {
+    let msg = simple().clone_with_attachment(Attachment::new(
+        "a.txt",
+        "text/plain\r\nX-Injected: yes\r\nBcc: evil@example.com",
+        b"x".to_vec(),
+    ));
+    // render() muss den Versuch ablehnen - nicht stillschweigend etwas senden.
+    assert_eq!(
+        msg.render().unwrap_err(),
+        Error::HeaderInjection("Content-Type")
+    );
+}
+
+#[test]
+fn every_rfc2047_word_decodes_on_its_own() {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    let msg = Message::builder()
+        .from("a@example.com")
+        .unwrap()
+        .to("b@example.com")
+        .unwrap()
+        .subject("Ihre Rechnung f\u{00fc}r die Wohnung in Ingolstadt und Umgebung")
+        .body("x")
+        .build()
+        .unwrap();
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    // Folding bricht den Header ueber mehrere Zeilen: erst entfalten.
+    let headers = text.split("\r\n\r\n").next().unwrap().replace("\r\n ", " ");
+    let subject_line = headers
+        .split("\r\n")
+        .find(|l| l.starts_with("Subject:"))
+        .expect("Subject-Header fehlt");
+    let words: Vec<&str> = subject_line
+        .trim_start_matches("Subject: ")
+        .split(' ')
+        .filter(|w| w.starts_with("=?UTF-8?B?"))
+        .collect();
+    assert!(
+        words.len() >= 2,
+        "langer Betreff muss in mehrere encoded-words zerfallen, war: {subject_line}"
+    );
+
+    let mut decoded = String::new();
+    for word in words {
+        let b64 = word.trim_start_matches("=?UTF-8?B?").trim_end_matches("?=");
+        let bytes = STANDARD
+            .decode(b64)
+            .unwrap_or_else(|e| panic!("encoded-word {word} ist kein gueltiges Base64: {e}"));
+        decoded.push_str(
+            &String::from_utf8(bytes).expect("jede encoded-word muss eigenstaendig UTF-8 sein"),
+        );
+    }
+    assert_eq!(
+        decoded,
+        "Ihre Rechnung f\u{00fc}r die Wohnung in Ingolstadt und Umgebung"
+    );
+}

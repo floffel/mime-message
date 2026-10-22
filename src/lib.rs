@@ -40,6 +40,10 @@ impl Mailbox {
             return Err(Error::EmptyHeader("mailbox"));
         }
         if let (Some(start), Some(end)) = (raw.find('<'), raw.rfind('>')) {
+            // Brackets in the wrong order (">...<") would make the slice panic.
+            if end <= start + 1 {
+                return Err(Error::InvalidMailbox(raw.to_string()));
+            }
             let address = raw[start + 1..end].trim().to_string();
             if !address.contains('@') {
                 return Err(Error::InvalidMailbox(raw.to_string()));

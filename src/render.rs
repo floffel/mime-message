@@ -56,6 +56,9 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
 
         for attachment in &message.attachments {
             out.push_str(&format!("--{boundary}{CRLF}"));
+            if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
+                return Err(Error::HeaderInjection("Content-Type"));
+            }
             out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
             out.push_str("Content-Transfer-Encoding: base64\r\n");
             out.push_str(&format!(
@@ -111,26 +114,29 @@ fn fold_header(name: &str, value: &str) -> String {
 
 /// RFC 2047 encoded-word for non-ASCII header content.
 fn encode_word(value: &str) -> String {
+    const MAX_BYTES: usize = 30;
     if value.is_ascii() {
         return value.to_string();
     }
-    let encoded = STANDARD.encode(value.as_bytes());
-    // Split long encoded words so each stays well below the 75-char limit.
-    let mut parts = Vec::new();
+    // RFC 2047: each encoded-word must decode on its own, so split at char
+    // boundaries with a byte budget that is a multiple of 3 (base64 pads
+    // otherwise) and keeps the word well under 75 characters.
+
+    let mut words: Vec<String> = Vec::new();
     let mut current = String::new();
-    for chunk in encoded.as_bytes().chunks(45) {
-        let piece = String::from_utf8_lossy(chunk).to_string();
-        if current.len() + piece.len() > 45 {
-            parts.push(std::mem::take(&mut current));
+    for ch in value.chars() {
+        if current.len() + ch.len_utf8() > MAX_BYTES {
+            words.push(STANDARD.encode(current.as_bytes()));
+            current.clear();
         }
-        current.push_str(&piece);
+        current.push(ch);
     }
     if !current.is_empty() {
-        parts.push(current);
+        words.push(STANDARD.encode(current.as_bytes()));
     }
-    parts
+    words
         .into_iter()
-        .map(|p| format!("=?UTF-8?B?{p}?="))
+        .map(|w| format!("=?UTF-8?B?{w}?="))
         .collect::<Vec<_>>()
         .join(" ")
 }

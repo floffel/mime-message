@@ -10,6 +10,7 @@ documentation = "https://docs.rs/mime-message"
 keywords = ["email", "mime", "rfc5322", "smtp"]
 categories = ["email", "encoding"]
 readme = "README.md"
+exclude = [".github/**", "deny.toml"]
 
 [dependencies]
 base64 = "0.22"
