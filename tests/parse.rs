@@ -36,7 +36,7 @@ fn headers_only_has_empty_body() {
     let message = parse("From: a@example.com\r\nSubject: x").unwrap();
     assert_eq!(message.subject, "x");
     assert_eq!(message.body, "");
-    assert!(message.attachments.is_empty());
+    assert_eq!(message.attachments, Vec::new());
 }
 
 #[test]
@@ -378,7 +378,7 @@ fn multipart_alternative_prefers_plain_text_and_keeps_html() {
     let message = parse(&raw).unwrap();
     assert_eq!(message.body, "Hallo");
     assert_eq!(message.html_body.as_deref(), Some("<p>Hallo</p>"));
-    assert!(message.attachments.is_empty());
+    assert_eq!(message.attachments, Vec::new());
 }
 
 #[test]

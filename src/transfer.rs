@@ -127,7 +127,7 @@ mod tests {
         // 76-column wrapping as produced by the renderer.
         let wrapped =
             "TWFuIGlzIGRpc3Rpbmd1aXNoZWQsIG5vdCBvbmx5IGJ5IGhpcyByZWFzb24sIGJ1dCBieSB0aGlz";
-        assert!(!decode_base64(wrapped).unwrap().is_empty());
+        assert_ne!(decode_base64(wrapped).unwrap(), Vec::new());
     }
 
     #[test]
