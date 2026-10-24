@@ -51,6 +51,16 @@ pub use error::{Error, Result};
 pub use parse::{parse, parse_with_limits, Limits};
 
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
+///
+/// ```
+/// use mime_message::Mailbox;
+///
+/// let mailbox = Mailbox {
+///     name: Some("Shop".to_string()),
+///     address: "shop@example.com".to_string(),
+/// };
+/// assert_eq!(mailbox.address, "shop@example.com");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mailbox {
     /// Optional display name.
@@ -89,6 +99,13 @@ impl Mailbox {
 }
 
 /// One attachment with its raw bytes.
+///
+/// ```
+/// use mime_message::Attachment;
+///
+/// let attachment = Attachment::new("rechnung.pdf", "application/pdf", b"%PDF".to_vec());
+/// assert_eq!(attachment.filename, "rechnung.pdf");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
     /// File name shown by the client.
@@ -101,6 +118,12 @@ pub struct Attachment {
 
 impl Attachment {
     /// Creates an attachment.
+    ///
+    /// ```
+    /// # use mime_message::Attachment;
+    /// let attachment = Attachment::new("a.txt", "text/plain", b"hi".to_vec());
+    /// assert_eq!(attachment.content_type, "text/plain");
+    /// ```
     #[must_use]
     pub fn new(
         filename: impl Into<String>,
@@ -116,6 +139,14 @@ impl Attachment {
 }
 
 /// A message, either built or parsed.
+///
+/// ```
+/// use mime_message::Message;
+///
+/// let message = Message::parse("From: a@example.com\r\n\r\nbody")?;
+/// assert_eq!(message.body, "body");
+/// # Ok::<(), mime_message::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     /// Envelope sender as it appears in `From:`.
@@ -139,6 +170,18 @@ pub struct Message {
 }
 
 /// Step-by-step builder for [`Message`].
+///
+/// ```
+/// use mime_message::Message;
+///
+/// let message = Message::builder()
+///     .from("a@example.com")?
+///     .to("b@example.com")?
+///     .subject("hi")
+///     .build()?;
+/// assert_eq!(message.to[0].address, "b@example.com");
+/// # Ok::<(), mime_message::Error>(())
+/// ```
 #[derive(Debug, Default)]
 pub struct MessageBuilder {
     from: Option<Mailbox>,
@@ -154,12 +197,34 @@ pub struct MessageBuilder {
 
 impl Message {
     /// Starts a builder.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.from.address, "a@example.com");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn builder() -> MessageBuilder {
         MessageBuilder::default()
     }
 
     /// Renders the message as bytes with CRLF line endings.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let raw = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("hi")
+    ///     .build()?
+    ///     .render()?;
+    /// assert!(raw.ends_with(b"hi"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -209,6 +274,16 @@ impl Message {
 impl MessageBuilder {
     /// Sets `From:`.
     ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("Shop <shop@example.com>")?
+    ///     .to("kunde@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.from.name.as_deref(), Some("Shop"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
     /// # Errors
     ///
     /// Rejects malformed mailboxes.
@@ -218,6 +293,17 @@ impl MessageBuilder {
     }
 
     /// Adds one `To:` recipient.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .to("c@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.to.len(), 2);
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -229,6 +315,17 @@ impl MessageBuilder {
 
     /// Adds one `Cc:` recipient.
     ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .cc("c@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.cc[0].address, "c@example.com");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
     /// # Errors
     ///
     /// Rejects malformed mailboxes.
@@ -238,6 +335,17 @@ impl MessageBuilder {
     }
 
     /// Sets the subject.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .subject("Grüße")
+    ///     .build()?;
+    /// assert_eq!(message.subject, "Grüße");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn subject(mut self, subject: impl Into<String>) -> Self {
         self.subject = subject.into();
@@ -245,6 +353,17 @@ impl MessageBuilder {
     }
 
     /// Sets the plain text body.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("Hallo")
+    ///     .build()?;
+    /// assert_eq!(message.body, "Hallo");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn body(mut self, body: impl Into<String>) -> Self {
         self.body = body.into();
@@ -252,6 +371,18 @@ impl MessageBuilder {
     }
 
     /// Sets an HTML alternative, rendered as `multipart/alternative`.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("Hallo")
+    ///     .html_body("<p>Hallo</p>")
+    ///     .build()?;
+    /// assert_eq!(message.html_body.as_deref(), Some("<p>Hallo</p>"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn html_body(mut self, html: impl Into<String>) -> Self {
         self.html_body = Some(html.into());
@@ -259,6 +390,17 @@ impl MessageBuilder {
     }
 
     /// Sets the `Date:` header (RFC 5322 format).
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .date("Tue, 21 Oct 2026 10:00:00 +0000")
+    ///     .build()?;
+    /// assert!(message.date.is_some());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn date(mut self, date: impl Into<String>) -> Self {
         self.date = Some(date.into());
@@ -266,6 +408,17 @@ impl MessageBuilder {
     }
 
     /// Sets the `Message-ID:` header.
+    ///
+    /// ```
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .message_id("<abc@example.com>")
+    ///     .build()?;
+    /// assert_eq!(message.message_id.as_deref(), Some("<abc@example.com>"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn message_id(mut self, id: impl Into<String>) -> Self {
         self.message_id = Some(id.into());
@@ -273,6 +426,17 @@ impl MessageBuilder {
     }
 
     /// Adds an attachment.
+    ///
+    /// ```
+    /// # use mime_message::{Attachment, Message};
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .attachment(Attachment::new("a.txt", "text/plain", b"hi".to_vec()))
+    ///     .build()?;
+    /// assert_eq!(message.attachments[0].filename, "a.txt");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     #[must_use]
     pub fn attachment(mut self, attachment: Attachment) -> Self {
         self.attachments.push(attachment);
@@ -280,6 +444,16 @@ impl MessageBuilder {
     }
 
     /// Finishes the message.
+    ///
+    /// ```
+    /// # use mime_message::{Error, Message};
+    /// // A recipient is mandatory.
+    /// assert_eq!(
+    ///     Message::builder().from("a@example.com")?.build().unwrap_err(),
+    ///     Error::NoRecipients
+    /// );
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
     ///
     /// # Errors
     ///

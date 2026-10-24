@@ -4,6 +4,12 @@ use thiserror::Error;
 
 /// Everything that prevents building, rendering or parsing a valid message.
 ///
+/// ```
+/// use mime_message::{parse, Error};
+///
+/// assert_eq!(parse("").unwrap_err(), Error::EmptyMessage);
+/// ```
+///
 /// The enum is `#[non_exhaustive]`: match with a `_` arm so new checks can be
 /// added without a breaking release.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -62,4 +68,14 @@ pub enum Error {
 }
 
 /// Convenience alias.
+///
+/// ```
+/// use mime_message::{parse, Result};
+///
+/// fn subject_of(raw: &str) -> Result<String> {
+///     Ok(parse(raw)?.subject)
+/// }
+/// assert_eq!(subject_of("From: a@example.com\r\nSubject: hi\r\n\r\nx")?, "hi");
+/// # Ok::<(), mime_message::Error>(())
+/// ```
 pub type Result<T> = std::result::Result<T, Error>;
