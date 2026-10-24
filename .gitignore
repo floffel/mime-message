@@ -1,2 +1,9 @@
 /target
+/fuzz/target
+/fuzz/artifacts
+/fuzz/coverage
+# Keep the hand-written seed corpus, ignore what libFuzzer generates.
+/fuzz/corpus/*/*
+!/fuzz/corpus/*/*.eml
 Cargo.lock
+!/fuzz/Cargo.lock

@@ -17,6 +17,27 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # 98% line coverage locally; the gate stops it from sliding.
+      - run: cargo llvm-cov --all-features --summary-only --fail-under-lines 95
+
+  fuzz-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Build fuzz targets
+        run: cargo +nightly fuzz build parse
+
   deny:
     runs-on: ubuntu-latest
     steps:
