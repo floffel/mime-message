@@ -17,13 +17,10 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     let mut out = String::new();
 
     push_header(&mut out, "From", &render_mailbox(&message.from), true)?;
-    let to = message
-        .to
-        .iter()
-        .map(render_mailbox)
-        .collect::<Vec<_>>()
-        .join(", ");
-    push_header(&mut out, "To", &to, true)?;
+    push_header(&mut out, "To", &render_mailboxes(&message.to), true)?;
+    if !message.cc.is_empty() {
+        push_header(&mut out, "Cc", &render_mailboxes(&message.cc), true)?;
+    }
     push_header(&mut out, "Subject", &encode_word(&message.subject), true)?;
     if let Some(date) = &message.date {
         push_header(&mut out, "Date", date, false)?;
@@ -33,60 +30,110 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     }
     push_header(&mut out, "MIME-Version", "1.0", false)?;
 
-    if message.attachments.is_empty() {
+    let has_html = message.html_body.is_some();
+    if !has_html && message.attachments.is_empty() {
         push_header(&mut out, "Content-Type", "text/plain; charset=utf-8", false)?;
         push_header(&mut out, "Content-Transfer-Encoding", "8bit", false)?;
         out.push_str(CRLF);
         out.push_str(&normalise_newlines(&message.body));
-    } else {
-        let boundary = boundary_for(message);
-        push_header(
-            &mut out,
-            "Content-Type",
-            &format!("multipart/mixed; boundary=\"{boundary}\""),
-            false,
-        )?;
-        out.push_str(CRLF);
-
-        out.push_str(&format!("--{boundary}{CRLF}"));
-        out.push_str("Content-Type: text/plain; charset=utf-8\r\n");
-        out.push_str("Content-Transfer-Encoding: 8bit\r\n\r\n");
-        out.push_str(&normalise_newlines(&message.body));
-        out.push_str(CRLF);
-
-        for attachment in &message.attachments {
-            out.push_str(&format!("--{boundary}{CRLF}"));
-            if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
-                return Err(Error::HeaderInjection("Content-Type"));
-            }
-            out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
-            out.push_str("Content-Transfer-Encoding: base64\r\n");
-            out.push_str(&format!(
-                "Content-Disposition: attachment; filename=\"{}\"\r\n\r\n",
-                sanitise_filename(&attachment.filename)
-            ));
-            out.push_str(&base64_wrapped(&attachment.data));
-            out.push_str(CRLF);
-        }
-        out.push_str(&format!("--{boundary}--{CRLF}"));
+        return Ok(out.into_bytes());
     }
+
+    let boundary = boundary_for(message);
+    let kind = if message.attachments.is_empty() {
+        "alternative"
+    } else {
+        "mixed"
+    };
+    push_header(
+        &mut out,
+        "Content-Type",
+        &format!("multipart/{kind}; boundary=\"{boundary}\""),
+        false,
+    )?;
+    out.push_str(CRLF);
+
+    match (&message.html_body, message.attachments.is_empty()) {
+        (Some(html), true) => {
+            write_text_section(&mut out, &boundary, "text/plain", &message.body);
+            write_text_section(&mut out, &boundary, "text/html", html);
+        }
+        (Some(html), false) => {
+            // mixed(alternative(plain, html), attachments)
+            let inner = format!("{boundary}_alt");
+            out.push_str(&format!("--{boundary}{CRLF}"));
+            out.push_str(&format!(
+                "Content-Type: multipart/alternative; boundary=\"{inner}\"{CRLF}{CRLF}"
+            ));
+            write_text_section(&mut out, &inner, "text/plain", &message.body);
+            write_text_section(&mut out, &inner, "text/html", html);
+            out.push_str(&format!("--{inner}--{CRLF}"));
+        }
+        (None, _) => write_text_section(&mut out, &boundary, "text/plain", &message.body),
+    }
+
+    for attachment in &message.attachments {
+        out.push_str(&format!("--{boundary}{CRLF}"));
+        if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
+            return Err(Error::HeaderInjection("Content-Type"));
+        }
+        out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
+        out.push_str("Content-Transfer-Encoding: base64\r\n");
+        out.push_str(&format!(
+            "Content-Disposition: attachment; filename=\"{}\"\r\n\r\n",
+            sanitise_filename(&attachment.filename)
+        ));
+        out.push_str(&base64_wrapped(&attachment.data));
+        out.push_str(CRLF);
+    }
+    out.push_str(&format!("--{boundary}--{CRLF}"));
 
     Ok(out.into_bytes())
 }
 
+fn write_text_section(out: &mut String, boundary: &str, content_type: &str, text: &str) {
+    out.push_str(&format!("--{boundary}{CRLF}"));
+    out.push_str(&format!(
+        "Content-Type: {content_type}; charset=utf-8{CRLF}"
+    ));
+    out.push_str(&format!("Content-Transfer-Encoding: 8bit{CRLF}{CRLF}"));
+    out.push_str(&normalise_newlines(text));
+    out.push_str(CRLF);
+}
+
+fn render_mailboxes(mailboxes: &[Mailbox]) -> String {
+    mailboxes
+        .iter()
+        .map(render_mailbox)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render_mailbox(mailbox: &Mailbox) -> String {
     match &mailbox.name {
-        Some(name) if name.is_ascii() && !name.contains('"') => {
-            format!("\"{name}\" <{}>", mailbox.address)
+        Some(name) if name.is_ascii() => {
+            format!("\"{}\" <{}>", escape_quoted(name), mailbox.address)
         }
         Some(name) => format!("{} <{}>", encode_word(name), mailbox.address),
         None => mailbox.address.clone(),
     }
 }
 
+/// Escapes a display name for a quoted-string: only `\` and `"` are special.
+fn escape_quoted(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch == '\\' || ch == '"' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Appends `Name: value` with folding and CRLF injection protection.
 fn push_header(out: &mut String, name: &'static str, value: &str, _foldable: bool) -> Result<()> {
-    if value.contains('\r') || value.contains('\n') {
+    if has_forbidden_chars(value) {
         return Err(Error::HeaderInjection(name));
     }
     let folded = fold_header(name, value);
@@ -95,21 +142,42 @@ fn push_header(out: &mut String, name: &'static str, value: &str, _foldable: boo
     Ok(())
 }
 
-/// Folds at spaces so no line exceeds 78 characters (RFC 5322 §2.1.1).
+/// Rejects every character that could start a new header line.
+fn has_forbidden_chars(value: &str) -> bool {
+    value.chars().any(|ch| {
+        matches!(ch, '\r' | '\n' | '\0' | '\u{85}' | '\u{2028}' | '\u{2029}')
+            || (ch.is_control() && ch != '\t')
+    })
+}
+
+/// Folds at single-space boundaries so no line exceeds 78 characters
+/// (RFC 5322 §2.1.1).
+///
+/// Folding replaces one space with CRLF + space; since unfolding removes only
+/// the CRLF, the value round-trips byte for byte. Runs of whitespace are never
+/// used as a fold point, so they survive unchanged.
 fn fold_header(name: &str, value: &str) -> String {
-    let mut line = format!("{name}: ");
-    let mut result = String::new();
-    for word in value.split(' ') {
-        if line.len() + word.len() + 1 > MAX_LINE && line.len() > name.len() + 2 {
-            result.push_str(line.trim_end());
-            result.push_str(CRLF);
-            line = String::from(" ");
+    let tokens: Vec<&str> = value.split(' ').collect();
+    let mut out = format!("{name}: ");
+    let mut line_len = name.len() + 2;
+
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            let previous = tokens[index - 1];
+            let foldable = !token.is_empty() && !previous.is_empty() && line_len > name.len() + 2;
+            if foldable && line_len + 1 + token.len() > MAX_LINE {
+                out.push_str(CRLF);
+                out.push(' ');
+                line_len = 1;
+            } else {
+                out.push(' ');
+                line_len += 1;
+            }
         }
-        line.push_str(word);
-        line.push(' ');
+        out.push_str(token);
+        line_len += token.len();
     }
-    result.push_str(line.trim_end());
-    result
+    out
 }
 
 /// RFC 2047 encoded-word for non-ASCII header content.
@@ -119,8 +187,8 @@ fn encode_word(value: &str) -> String {
         return value.to_string();
     }
     // RFC 2047: each encoded-word must decode on its own, so split at char
-    // boundaries with a byte budget that is a multiple of 3 (base64 pads
-    // otherwise) and keeps the word well under 75 characters.
+    // boundaries with a byte budget that keeps the word well under 75
+    // characters.
 
     let mut words: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -157,8 +225,17 @@ fn base64_wrapped(data: &[u8]) -> String {
     out
 }
 
+/// Neutralises anything that could break out of the quoted filename.
 fn sanitise_filename(name: &str) -> String {
-    name.replace(['\r', '\n', '"'], "_")
+    name.chars()
+        .map(|ch| {
+            if matches!(ch, '\r' | '\n' | '"' | '\\') || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect()
 }
 
 /// Deterministic boundary derived from the content — stable across runs.
@@ -169,6 +246,10 @@ fn boundary_for(message: &Message) -> String {
     let mut hasher = DefaultHasher::new();
     message.subject.hash(&mut hasher);
     message.body.hash(&mut hasher);
+    message.html_body.hash(&mut hasher);
+    for mailbox in &message.cc {
+        mailbox.address.hash(&mut hasher);
+    }
     for attachment in &message.attachments {
         attachment.filename.hash(&mut hasher);
         attachment.data.hash(&mut hasher);

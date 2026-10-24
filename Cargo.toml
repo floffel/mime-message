@@ -1,20 +1,23 @@
 [package]
 name = "mime-message"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
-description = "Build RFC 5322 / MIME email messages as bytes, without an SMTP dependency"
+description = "Build and parse RFC 5322 / MIME email messages, without an SMTP dependency"
 repository = "https://github.com/floffel/mime-message"
 documentation = "https://docs.rs/mime-message"
-keywords = ["email", "mime", "rfc5322", "smtp"]
-categories = ["email", "encoding"]
+keywords = ["email", "mime", "rfc5322", "rfc2047", "smtp"]
+categories = ["email", "encoding", "parser-implementations"]
 readme = "README.md"
-exclude = [".github/**", "deny.toml"]
+exclude = [".github/**", "deny.toml", "fuzz/**"]
 
 [dependencies]
 base64 = "0.22"
 thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

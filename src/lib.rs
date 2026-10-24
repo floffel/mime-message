@@ -1,8 +1,9 @@
-//! Build RFC 5322 / MIME messages as bytes — no SMTP, no I/O.
+//! Build and parse RFC 5322 / MIME messages — no SMTP, no I/O.
 //!
-//! ```
+//! ```no_run
 //! use mime_message::{Attachment, Message};
 //!
+//! # fn main() -> Result<(), mime_message::Error> {
 //! let raw = Message::builder()
 //!     .from("Shop <shop@example.com>")?
 //!     .to("kunde@example.com")?
@@ -13,16 +14,41 @@
 //!
 //! let bytes = raw.render()?;
 //! assert!(bytes.windows(2).any(|w| w == b"\r\n"));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The other half is [`Message::parse`]:
+//!
+//! ```
+//! use mime_message::Message;
+//!
+//! let raw = concat!(
+//!     "From: \"Shop\" <shop@example.com>\r\n",
+//!     "To: kunde@example.com\r\n",
+//!     "Subject: =?UTF-8?Q?Gr=C3=BC=C3=9Fe?=\r\n",
+//!     "Content-Type: text/plain; charset=utf-8\r\n",
+//!     "\r\n",
+//!     "Hallo\r\n",
+//! );
+//! let message = Message::parse(raw)?;
+//! assert_eq!(message.subject, "Grüße");
+//! assert_eq!(message.body, "Hallo\r\n");
 //! # Ok::<(), mime_message::Error>(())
 //! ```
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod charset;
 pub mod error;
+mod parse;
 mod render;
+pub mod rfc2047;
+pub mod transfer;
 
 pub use error::{Error, Result};
+pub use parse::{parse, parse_with_limits, Limits};
 
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,17 +115,21 @@ impl Attachment {
     }
 }
 
-/// A message ready to be rendered.
-#[derive(Debug, Clone)]
+/// A message, either built or parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     /// Envelope sender as it appears in `From:`.
     pub from: Mailbox,
     /// Recipients for `To:`.
     pub to: Vec<Mailbox>,
+    /// Recipients for `Cc:`.
+    pub cc: Vec<Mailbox>,
     /// Subject, may contain non-ASCII.
     pub subject: String,
     /// Plain text body.
     pub body: String,
+    /// Optional `text/html` alternative, rendered as `multipart/alternative`.
+    pub html_body: Option<String>,
     /// Optional `Date:` header, caller supplied to keep rendering deterministic.
     pub date: Option<String>,
     /// Optional `Message-ID:`.
@@ -113,8 +143,10 @@ pub struct Message {
 pub struct MessageBuilder {
     from: Option<Mailbox>,
     to: Vec<Mailbox>,
+    cc: Vec<Mailbox>,
     subject: String,
     body: String,
+    html_body: Option<String>,
     date: Option<String>,
     message_id: Option<String>,
     attachments: Vec<Attachment>,
@@ -134,6 +166,43 @@ impl Message {
     /// Fails on header injection, missing headers, or no recipients.
     pub fn render(&self) -> Result<Vec<u8>> {
         render::render(self)
+    }
+
+    /// Parses an RFC 5322 / MIME message with the default [`Limits`].
+    ///
+    /// ```
+    /// use mime_message::Message;
+    ///
+    /// let message = Message::parse("From: a@example.com\r\nSubject: hi\r\n\r\nbody")?;
+    /// assert_eq!(message.from.address, "a@example.com");
+    /// assert_eq!(message.body, "body");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`parse`] for the full list of typed failures.
+    pub fn parse(raw: &str) -> Result<Self> {
+        parse::parse(raw)
+    }
+
+    /// Parses a message with explicit [`Limits`].
+    ///
+    /// ```
+    /// use mime_message::{Limits, Message};
+    ///
+    /// let mut limits = Limits::default();
+    /// limits.max_parts = 1;
+    /// let nested = "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+    ///     --b\r\n\r\nhi\r\n--b--\r\n";
+    /// assert!(Message::parse_with_limits(nested, &limits).is_err());
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`parse_with_limits`].
+    pub fn parse_with_limits(raw: &str, limits: &Limits) -> Result<Self> {
+        parse::parse_with_limits(raw, limits)
     }
 }
 
@@ -158,6 +227,16 @@ impl MessageBuilder {
         Ok(self)
     }
 
+    /// Adds one `Cc:` recipient.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed mailboxes.
+    pub fn cc(mut self, raw: &str) -> Result<Self> {
+        self.cc.push(Mailbox::parse(raw)?);
+        Ok(self)
+    }
+
     /// Sets the subject.
     #[must_use]
     pub fn subject(mut self, subject: impl Into<String>) -> Self {
@@ -169,6 +248,13 @@ impl MessageBuilder {
     #[must_use]
     pub fn body(mut self, body: impl Into<String>) -> Self {
         self.body = body.into();
+        self
+    }
+
+    /// Sets an HTML alternative, rendered as `multipart/alternative`.
+    #[must_use]
+    pub fn html_body(mut self, html: impl Into<String>) -> Self {
+        self.html_body = Some(html.into());
         self
     }
 
@@ -206,8 +292,10 @@ impl MessageBuilder {
         Ok(Message {
             from,
             to: self.to,
+            cc: self.cc,
             subject: self.subject,
             body: self.body,
+            html_body: self.html_body,
             date: self.date,
             message_id: self.message_id,
             attachments: self.attachments,
