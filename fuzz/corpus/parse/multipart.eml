@@ -1,0 +1,27 @@
+From: Shop <shop@example.com>
+To: kunde@example.com, "Zweiter, Empfänger" <zwei@example.com>
+Cc: Team: a@example.com, b@example.com;
+Subject: =?UTF-8?B?R3LDvMOfZQ==?= =?UTF-8?Q? aus_M=C3=BCnchen?=
+Content-Type: multipart/mixed; boundary="=_mime_message_0000000000000000"
+
+preamble
+--=_mime_message_0000000000000000
+Content-Type: multipart/alternative; boundary="alt"
+
+--alt
+Content-Type: text/plain; charset=utf-8
+
+Hallo Welt
+--alt
+Content-Type: text/html; charset=utf-8
+
+<p>Hallo Welt</p>
+--alt--
+--=_mime_message_0000000000000000
+Content-Type: application/pdf; name*=utf-8''Rech%20nung.pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename*0*=utf-8''Rech; filename*1*=nung.pdf
+
+JVBERi0xLjQgZnV6enkgdGVzdA==
+--=_mime_message_0000000000000000--
+epilogue

@@ -1,0 +1,7 @@
+From: a@example.com
+Content-Type: multipart/mixed; boundary=trunc
+
+--trunc
+Content-Type: text/plain
+
+unterminated
