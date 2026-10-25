@@ -7,7 +7,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::error::{Error, Result};
-use crate::{Mailbox, Message};
+use crate::{cid, is_tchar, truncate, Mailbox, Message, MODELLED_HEADERS};
 
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
@@ -17,7 +17,9 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     let mut out = String::new();
 
     push_header(&mut out, "From", &render_mailbox(&message.from), true)?;
-    push_header(&mut out, "To", &render_mailboxes(&message.to), true)?;
+    if !message.to.is_empty() {
+        push_header(&mut out, "To", &render_mailboxes(&message.to), true)?;
+    }
     if !message.cc.is_empty() {
         push_header(&mut out, "Cc", &render_mailboxes(&message.cc), true)?;
     }
@@ -28,6 +30,8 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     if let Some(id) = &message.message_id {
         push_header(&mut out, "Message-ID", id, false)?;
     }
+    // `Bcc` is deliberately not rendered: it is what makes it blind.
+    push_preserved(&mut out, message)?;
     push_header(&mut out, "MIME-Version", "1.0", false)?;
 
     let has_html = message.html_body.is_some();
@@ -39,12 +43,22 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
         return Ok(out.into_bytes());
     }
 
-    let boundary = boundary_for(message);
-    let kind = if message.attachments.is_empty() {
+    // `multipart/related` is the container inline parts belong in (RFC 2387):
+    // it is only used when the HTML body has something to point at.
+    let all_inline = !message.attachments.is_empty()
+        && message
+            .attachments
+            .iter()
+            .all(|attachment| attachment.content_id.is_some());
+    let related = has_html && all_inline;
+    let kind = if related {
+        "related"
+    } else if message.attachments.is_empty() {
         "alternative"
     } else {
         "mixed"
     };
+    let boundary = boundary_for(message);
     push_header(
         &mut out,
         "Content-Type",
@@ -53,52 +67,144 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     )?;
     out.push_str(CRLF);
 
-    match (&message.html_body, message.attachments.is_empty()) {
-        (Some(html), true) => {
+    if let Some(html) = message.html_body.as_ref() {
+        if message.attachments.is_empty() {
             write_text_section(&mut out, &boundary, "text/plain", &message.body);
             write_text_section(&mut out, &boundary, "text/html", html);
-        }
-        (Some(html), false) => {
-            // mixed(alternative(plain, html), attachments)
+        } else {
+            // mixed(alternative(plain, html), attachments) or
+            // related(alternative(plain, html), inline parts)
             let inner = format!("{boundary}_alt");
-            out.push_str(&format!("--{boundary}{CRLF}"));
-            out.push_str(&format!(
-                "Content-Type: multipart/alternative; boundary=\"{inner}\"{CRLF}{CRLF}"
-            ));
+            write_part_header(
+                &mut out,
+                &boundary,
+                &format!("Content-Type: multipart/alternative; boundary=\"{inner}\""),
+            );
             write_text_section(&mut out, &inner, "text/plain", &message.body);
             write_text_section(&mut out, &inner, "text/html", html);
             out.push_str(&format!("--{inner}--{CRLF}"));
         }
-        (None, _) => write_text_section(&mut out, &boundary, "text/plain", &message.body),
+    } else {
+        write_text_section(&mut out, &boundary, "text/plain", &message.body);
     }
 
     for attachment in &message.attachments {
-        out.push_str(&format!("--{boundary}{CRLF}"));
-        if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
-            return Err(Error::HeaderInjection("Content-Type"));
-        }
-        out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
-        out.push_str("Content-Transfer-Encoding: base64\r\n");
-        out.push_str(&format!(
-            "Content-Disposition: attachment; filename=\"{}\"\r\n\r\n",
-            sanitise_filename(&attachment.filename)
-        ));
-        out.push_str(&base64_wrapped(&attachment.data));
-        out.push_str(CRLF);
+        write_attachment(&mut out, &boundary, attachment)?;
     }
     out.push_str(&format!("--{boundary}--{CRLF}"));
 
     Ok(out.into_bytes())
 }
 
-fn write_text_section(out: &mut String, boundary: &str, content_type: &str, text: &str) {
+/// Writes the header fields the crate does not model, byte for byte.
+fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
+    for header in message.headers() {
+        if !header.name().bytes().all(is_tchar) {
+            return Err(Error::MalformedHeader(truncate(header.name(), 120)));
+        }
+        if MODELLED_HEADERS.iter().any(|name| header.is(name)) {
+            // Rendering `From` twice is header injection with extra steps.
+            return Err(Error::DuplicateHeader(header.name().to_string()));
+        }
+        check_no_line_break(header.raw_value(), header.name())?;
+        out.push_str(header.name());
+        out.push(':');
+        out.push_str(header.raw_value());
+        out.push_str(CRLF);
+    }
+    Ok(())
+}
+
+/// Allows CRLF only when it is followed by whitespace (a fold).
+fn check_no_line_break(value: &str, name: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                if bytes.get(index + 1) != Some(&b'\n')
+                    || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
+                {
+                    return Err(Error::ControlCharacter(name.to_string()));
+                }
+                index += 2;
+            }
+            b'\n' => return Err(Error::ControlCharacter(name.to_string())),
+            byte if (byte < 0x20 && byte != b'\t') || byte == 0x7F => {
+                return Err(Error::ControlCharacter(name.to_string()));
+            }
+            _ => index += 1,
+        }
+    }
+    Ok(())
+}
+
+fn write_part_header(out: &mut String, boundary: &str, header: &str) {
     out.push_str(&format!("--{boundary}{CRLF}"));
-    out.push_str(&format!(
-        "Content-Type: {content_type}; charset=utf-8{CRLF}"
-    ));
-    out.push_str(&format!("Content-Transfer-Encoding: 8bit{CRLF}{CRLF}"));
+    out.push_str(header);
+    out.push_str(CRLF);
+    out.push_str(CRLF);
+}
+
+fn write_text_section(out: &mut String, boundary: &str, content_type: &str, text: &str) {
+    write_part_header(
+        out,
+        boundary,
+        &format!(
+            "Content-Type: {content_type}; charset=utf-8{CRLF}Content-Transfer-Encoding: 8bit"
+        ),
+    );
     out.push_str(&normalise_newlines(text));
     out.push_str(CRLF);
+}
+
+fn write_attachment(
+    out: &mut String,
+    boundary: &str,
+    attachment: &crate::Attachment,
+) -> Result<()> {
+    if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
+        return Err(Error::HeaderInjection("Content-Type"));
+    }
+    let content_id = attachment
+        .content_id
+        .as_deref()
+        .map(checked_content_id)
+        .transpose()?;
+    let disposition = if content_id.is_some() {
+        "inline"
+    } else {
+        "attachment"
+    };
+
+    out.push_str(&format!("--{boundary}{CRLF}"));
+    out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
+    out.push_str("Content-Transfer-Encoding: base64\r\n");
+    if let Some(id) = &content_id {
+        out.push_str(&format!("Content-ID: <{id}>\r\n"));
+    }
+    out.push_str(&format!(
+        "Content-Disposition: {disposition}; filename=\"{}\"\r\n\r\n",
+        sanitise_filename(&attachment.filename)
+    ));
+    out.push_str(&base64_wrapped(&attachment.data));
+    out.push_str(CRLF);
+    Ok(())
+}
+
+/// A `Content-ID` must stay inside its angle brackets.
+fn checked_content_id(raw: &str) -> Result<String> {
+    let id = cid::normalise(raw);
+    if id.is_empty() {
+        return Err(Error::EmptyHeader("Content-ID"));
+    }
+    if id
+        .chars()
+        .any(|ch| matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace())
+    {
+        return Err(Error::ControlCharacter("Content-ID".to_string()));
+    }
+    Ok(id.to_string())
 }
 
 fn render_mailboxes(mailboxes: &[Mailbox]) -> String {
@@ -250,8 +356,13 @@ fn boundary_for(message: &Message) -> String {
     for mailbox in &message.cc {
         mailbox.address.hash(&mut hasher);
     }
+    for header in message.headers() {
+        header.name().hash(&mut hasher);
+        header.raw_value().hash(&mut hasher);
+    }
     for attachment in &message.attachments {
         attachment.filename.hash(&mut hasher);
+        attachment.content_id.hash(&mut hasher);
         attachment.data.hash(&mut hasher);
     }
     format!("=_mime_message_{:016x}", hasher.finish())

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ce89fe648243bdb68e15c236f7ce84985c8c3e6bbb24afe27713cdc3aca4a67c # shrinks to built = Message { from: Mailbox { name: None, address: "a@a.aa" }, to: [Mailbox { name: None, address: "\" <a@0.aa" }], cc: [], bcc: [], subject: "", body: "", html_body: None, date: None, message_id: None, attachments: [], headers: [] }
+cc e0f4cf932298214387a7d21ef955af30c94fa58489fa3e1adb29fc02464c17bd # shrinks to built = Message { from: Mailbox { name: None, address: "a@0.aa" }, to: [Mailbox { name: None, address: "0@a.aa" }], cc: [Mailbox { name: None, address: "\" <0@a.aa" }], bcc: [], subject: "", body: "", html_body: None, date: None, message_id: None, attachments: [], headers: [] }
+cc 9a86b5d3ba90ff9fbd1b5c990a212a9d8d974cfc7248cbc5ade3f3f6d64af87e # shrinks to value = " "

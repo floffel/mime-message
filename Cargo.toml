@@ -1,6 +1,6 @@
 [package]
 name = "mime-message"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
@@ -16,8 +16,20 @@ exclude = [".github/**", "deny.toml", "fuzz/**"]
 base64 = "0.22"
 thiserror = "2"
 
+# DKIM is optional: it pulls in RSA/Ed25519 and a SHA-256 implementation.
+ed25519-dalek = { version = "2.2", optional = true, default-features = false, features = ["std", "pkcs8", "pem"] }
+rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "sha2", "pem"] }
+sha2 = { version = "0.10", optional = true }
+subtle = { version = "2.6", optional = true }
+
 [dev-dependencies]
+base64 = "0.22"
 proptest = "1"
+sha2 = "0.10"
+
+[features]
+default = []
+dkim = ["dep:ed25519-dalek", "dep:rsa", "dep:sha2", "dep:subtle"]
 
 [lints.rust]
 unsafe_code = "forbid"

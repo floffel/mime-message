@@ -65,6 +65,38 @@ pub enum Error {
         /// The configured maximum.
         limit: usize,
     },
+    /// A DKIM private or public key could not be read.
+    ///
+    /// Covers PEM that is not a key, an unknown key type, a revoked (empty
+    /// `p=`) DNS record, a key whose algorithm is unsupported, and keys below
+    /// the RFC 8301 minimum of 1024 RSA bits. The message never contains key
+    /// material.
+    #[cfg(feature = "dkim")]
+    #[error("invalid DKIM key: {0}")]
+    InvalidKey(String),
+    /// A `DKIM-Signature` header field is malformed.
+    ///
+    /// Missing or duplicated tags, an unsupported algorithm or
+    /// canonicalization, and unparseable base64 all land here.
+    #[cfg(feature = "dkim")]
+    #[error("invalid DKIM signature: {0}")]
+    InvalidSignature(String),
+    /// The message carries no `DKIM-Signature` header field.
+    #[cfg(feature = "dkim")]
+    #[error("message has no DKIM-Signature header field")]
+    MissingSignature,
+    /// No `DKIM-Signature` in the message was made with this key's algorithm.
+    #[cfg(feature = "dkim")]
+    #[error("no DKIM-Signature uses the algorithm of this key")]
+    NoMatchingSignature,
+    /// The body hash in the signature does not match the body.
+    #[cfg(feature = "dkim")]
+    #[error("DKIM body hash mismatch: the body was modified")]
+    BodyHashMismatch,
+    /// The signature does not verify against the header hash.
+    #[cfg(feature = "dkim")]
+    #[error("DKIM signature does not verify: a signed header was modified")]
+    SignatureMismatch,
 }
 
 /// Convenience alias.

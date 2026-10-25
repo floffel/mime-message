@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.mime-message]
 path = ".."
+features = ["dkim"]
 
 [[bin]]
 name = "parse"

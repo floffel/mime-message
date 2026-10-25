@@ -12,7 +12,10 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::error::{Error, Result};
-use crate::{charset, rfc2047, transfer, Attachment, Mailbox, Message};
+use crate::header::Header;
+use crate::{
+    charset, is_tchar, rfc2047, transfer, truncate, Attachment, Mailbox, Message, MODELLED_HEADERS,
+};
 
 /// Longest header line (after unfolding) accepted, in bytes.
 const MAX_HEADER_LINE: usize = 8 * 1024;
@@ -148,6 +151,7 @@ impl Parser<'_> {
 
         let to = parse_joined_addresses(&headers, "To")?;
         let cc = parse_joined_addresses(&headers, "Cc")?;
+        let bcc = parse_joined_addresses(&headers, "Bcc")?;
         let subject = header_text(&headers, "Subject")?.unwrap_or_default();
         let date = header_text(&headers, "Date")?;
         let message_id = header_text(&headers, "Message-ID")?;
@@ -160,12 +164,14 @@ impl Parser<'_> {
             from,
             to,
             cc,
+            bcc,
             subject,
             body: flat.body,
             html_body: flat.html,
             date,
             message_id,
             attachments: flat.attachments,
+            headers: headers.preserved(),
         })
     }
 
@@ -198,6 +204,12 @@ impl Parser<'_> {
             check_filename(name)?;
         }
 
+        // `Content-ID: <logo@example.com>` — the anchor a `cid:` URL points at.
+        let content_id = headers
+            .get("Content-ID")
+            .map(|raw| crate::cid::normalise(&rfc2047::decode(raw)).to_string())
+            .filter(|id| !id.is_empty());
+
         let encoding = Encoding::parse(headers.unique("Content-Transfer-Encoding")?)?;
 
         let content = if media.kind == "multipart" {
@@ -222,6 +234,7 @@ impl Parser<'_> {
             media,
             disposition: disposition.map(|(kind, _)| kind),
             filename,
+            content_id,
             content,
         })
     }
@@ -266,6 +279,7 @@ struct Entity {
     media: MediaType,
     disposition: Option<String>,
     filename: Option<String>,
+    content_id: Option<String>,
     content: Content,
 }
 
@@ -315,6 +329,7 @@ fn flatten(entity: Entity, out: &mut Flat) {
                 filename,
                 content_type: entity.media.essence(),
                 data: bytes,
+                content_id: entity.content_id,
             });
         }
     }
@@ -326,15 +341,15 @@ fn flatten(entity: Entity, out: &mut Flat) {
 
 #[derive(Debug, Default, Clone)]
 struct Headers {
-    entries: Vec<(String, String)>,
+    entries: Vec<Header>,
 }
 
 impl Headers {
     fn get(&self, name: &str) -> Option<&str> {
         self.entries
             .iter()
-            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
+            .find(|header| header.is(name))
+            .map(Header::value)
     }
 
     /// All values of `name` joined with `", "` (duplicate `To:` is legal-ish).
@@ -342,8 +357,8 @@ impl Headers {
         let mut values = self
             .entries
             .iter()
-            .filter(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
+            .filter(|header| header.is(name))
+            .map(Header::value)
             .peekable();
         values.peek()?;
         let mut joined = String::new();
@@ -363,20 +378,31 @@ impl Headers {
     /// "last one wins".
     fn unique(&self, name: &'static str) -> Result<Option<&str>> {
         let mut found: Option<&str> = None;
-        for (candidate, value) in &self.entries {
-            if candidate.eq_ignore_ascii_case(name) {
+        for header in &self.entries {
+            if header.is(name) {
                 if found.is_some() {
                     return Err(Error::DuplicateHeader(name.to_string()));
                 }
-                found = Some(value);
+                found = Some(header.value());
             }
         }
         Ok(found)
     }
+
+    /// Every field the crate does not model, in wire order.
+    fn preserved(&self) -> Vec<Header> {
+        self.entries
+            .iter()
+            .filter(|header| !MODELLED_HEADERS.iter().any(|name| header.is(name)))
+            .cloned()
+            .collect()
+    }
 }
 
 fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
-    let mut headers = Headers::default();
+    // Names and raw values first: a continuation line appends to the value of
+    // the field above it, exactly as it stood on the wire.
+    let mut raw: Vec<(String, String)> = Vec::new();
     let mut total = 0usize;
     let mut rest = block;
 
@@ -396,10 +422,10 @@ fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
             });
         }
         if line.starts_with(' ') || line.starts_with('\t') {
-            match headers.entries.last_mut() {
+            match raw.last_mut() {
                 Some((_, value)) => {
-                    value.push(' ');
-                    value.push_str(line.trim());
+                    value.push_str("\r\n");
+                    value.push_str(line);
                 }
                 None => return Err(Error::MalformedHeader(truncate(line, 120))),
             }
@@ -411,10 +437,8 @@ fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
             if name.is_empty() || !name.bytes().all(is_tchar) {
                 return Err(Error::MalformedHeader(truncate(line, 120)));
             }
-            headers
-                .entries
-                .push((name.to_string(), line[colon + 1..].trim().to_string()));
-            if headers.entries.len() > limits.max_headers {
+            raw.push((name.to_string(), line[colon + 1..].to_string()));
+            if raw.len() > limits.max_headers {
                 return Err(Error::LimitExceeded {
                     what: "header count",
                     limit: limits.max_headers,
@@ -424,13 +448,19 @@ fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
         rest = next;
     }
 
-    for (name, value) in &headers.entries {
-        if value
+    let mut headers = Headers {
+        entries: Vec::with_capacity(raw.len()),
+    };
+    for (name, value) in raw {
+        let header = Header::from_wire(name, value)?;
+        if header
+            .value()
             .bytes()
             .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7F)
         {
-            return Err(Error::ControlCharacter(name.clone()));
+            return Err(Error::ControlCharacter(header.name().to_string()));
         }
+        headers.entries.push(header);
     }
 
     Ok(headers)
@@ -604,7 +634,7 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
     })
 }
 
-fn validate_address(address: &str) -> Result<()> {
+pub(crate) fn validate_address(address: &str) -> Result<()> {
     let invalid = || Error::InvalidMailbox(truncate(address, 120));
     if address.is_empty() || address.contains(['<', '>']) {
         return Err(invalid());
@@ -637,7 +667,7 @@ fn validate_address(address: &str) -> Result<()> {
 }
 
 /// Strips surrounding quotes and backslash escapes from a display name.
-fn unquote(raw: &str) -> String {
+pub(crate) fn unquote(raw: &str) -> String {
     let text = raw.trim();
     if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
         let inner = &text[1..text.len() - 1];
@@ -660,7 +690,7 @@ fn unquote(raw: &str) -> String {
 }
 
 /// Index of the first `<` outside quotes and comments.
-fn angle_open(text: &str) -> Option<usize> {
+pub(crate) fn angle_open(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut index = 0usize;
     while index < bytes.len() {
@@ -1002,10 +1032,6 @@ fn trim_ending(part: &str) -> &str {
 // Small scanning helpers
 // ---------------------------------------------------------------------------
 
-fn is_tchar(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
-}
-
 fn hex_digit(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -1103,17 +1129,6 @@ fn read_quoted(input: &str, start: usize) -> (String, usize) {
         }
     }
     (out, end)
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
-    }
-    let mut cut = max;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    text[..cut].to_string()
 }
 
 /// Rejects filenames that would escape a download directory.

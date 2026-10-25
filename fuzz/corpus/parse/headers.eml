@@ -1,0 +1,13 @@
+From: a@example.com
+To: b@example.com
+X-Spaced:   two  spaces
+X-Folded: one
+	two
+X-Empty:
+X-8bit: Grüße
+X-Dup: 1
+X-Dup: 2
+X-Url: https://example.com:8443/x?y=1
+Content-Type: text/plain; charset=utf-8
+
+body

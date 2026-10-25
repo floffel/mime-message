@@ -58,10 +58,35 @@ fn mailbox() -> impl Strategy<Value = Mailbox> {
     (display_name(), address()).prop_map(|(name, address)| Mailbox { name, address })
 }
 
+fn preserved_header() -> impl Strategy<Value = mime_message::Header> {
+    ("[A-Za-z][A-Za-z0-9-]{0,20}", header_text(60)).prop_filter_map(
+        "only header names the crate does not model",
+        |(name, value)| {
+            let modelled = [
+                "from",
+                "to",
+                "cc",
+                "bcc",
+                "subject",
+                "date",
+                "message-id",
+                "mime-version",
+                "content-type",
+                "content-transfer-encoding",
+            ];
+            if modelled.contains(&name.to_ascii_lowercase().as_str()) {
+                return None;
+            }
+            mime_message::Header::new(name, value).ok()
+        },
+    )
+}
+
 fn message() -> impl Strategy<Value = Message> {
     (
         mailbox(),
-        prop::collection::vec(mailbox(), 0..4),
+        prop::collection::vec(mailbox(), 1..4),
+        prop::collection::vec(mailbox(), 0..3),
         prop::collection::vec(mailbox(), 0..3),
         header_text(120),
         any::<String>(),
@@ -73,26 +98,72 @@ fn message() -> impl Strategy<Value = Message> {
                 filename(),
                 prop::sample::select(&CONTENT_TYPES[..]),
                 prop::collection::vec(any::<u8>(), 0..200),
+                prop::option::of("[a-zA-Z0-9._@-]{1,30}"),
             ),
             0..4,
         ),
+        prop::collection::vec(preserved_header(), 0..4),
     )
         .prop_map(
-            |(from, to, cc, subject, body, html_body, date, message_id, attachments)| Message {
+            |(
                 from,
                 to,
                 cc,
+                bcc,
                 subject,
                 body,
                 html_body,
                 date,
                 message_id,
-                attachments: attachments
-                    .into_iter()
-                    .map(|(name, content_type, data)| Attachment::new(name, content_type, data))
-                    .collect(),
+                attachments,
+                headers,
+            )| {
+                let mut builder = Message::builder()
+                    .from(&format_mailbox(&from))
+                    .expect("generated mailbox parses")
+                    .subject(subject)
+                    .body(body);
+                for mailbox in &to {
+                    builder = builder.to(&format_mailbox(mailbox)).expect("generated");
+                }
+                for mailbox in &cc {
+                    builder = builder.cc(&format_mailbox(mailbox)).expect("generated");
+                }
+                for mailbox in &bcc {
+                    builder = builder.bcc(&format_mailbox(mailbox)).expect("generated");
+                }
+                if let Some(html) = html_body {
+                    builder = builder.html_body(html);
+                }
+                if let Some(date) = date {
+                    builder = builder.date(date);
+                }
+                if let Some(id) = message_id {
+                    builder = builder.message_id(id);
+                }
+                for (name, content_type, data, content_id) in attachments {
+                    let mut attachment = Attachment::new(name, content_type, data);
+                    if let Some(id) = content_id {
+                        attachment = attachment.with_content_id(id);
+                    }
+                    builder = builder.attachment(attachment);
+                }
+                for header in headers {
+                    builder = builder.header(header);
+                }
+                builder.build().expect("generated message builds")
             },
         )
+}
+
+fn format_mailbox(mailbox: &Mailbox) -> String {
+    match &mailbox.name {
+        Some(name) => {
+            let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\"{escaped}\" <{}>", mailbox.address)
+        }
+        None => mailbox.address.clone(),
+    }
 }
 
 fn normalise_newlines(text: &str) -> String {
@@ -115,6 +186,17 @@ proptest! {
         prop_assert_eq!(&parsed.from, &built.from, "From: {:?}", raw);
         prop_assert_eq!(&parsed.to, &built.to, "To: {:?}", raw);
         prop_assert_eq!(&parsed.cc, &built.cc, "Cc: {:?}", raw);
+        // Bcc is never rendered, so it cannot survive the round trip; it must
+        // also not leak into the bytes.
+        prop_assert!(parsed.bcc.is_empty());
+        for mailbox in &built.bcc {
+            prop_assert!(
+                !raw.contains(&mailbox.address),
+                "Bcc address leaked into {:?}",
+                raw
+            );
+        }
+        prop_assert_eq!(parsed.headers(), built.headers(), "headers of {:?}", raw);
         prop_assert_eq!(parsed.subject.as_str(), built.subject.trim(), "subject of {:?}", raw);
         prop_assert_eq!(
             normalise_newlines(&parsed.body),
@@ -129,6 +211,7 @@ proptest! {
         for (got, want) in parsed.attachments.iter().zip(&built.attachments) {
             prop_assert_eq!(&got.filename, &want.filename);
             prop_assert_eq!(&got.content_type, &want.content_type);
+            prop_assert_eq!(&got.content_id, &want.content_id);
             prop_assert_eq!(&got.data, &want.data);
         }
     }
@@ -234,9 +317,136 @@ proptest! {
     #[test]
     fn parse_render_parse_is_stable(built in message()) {
         let Ok(raw) = built.render() else { return Ok(()) };
-        let first = parse(&String::from_utf8(raw).unwrap()).unwrap();
+        let first_text = String::from_utf8(raw).unwrap();
+        let first = match parse(&first_text) {
+            Ok(message) => message,
+            Err(error) => panic!("first parse failed: {error:?} for {first_text:?}"),
+        };
         let Ok(rerendered) = first.render() else { return Ok(()) };
-        let second = parse(&String::from_utf8(rerendered).unwrap()).unwrap();
+        let second_text = String::from_utf8(rerendered).unwrap();
+        let second = match parse(&second_text) {
+            Ok(message) => message,
+            Err(error) => panic!("second parse failed: {error:?} for {second_text:?}"),
+        };
         prop_assert_eq!(second, first);
+    }
+}
+
+/// DKIM properties: the body hash must follow RFC 6376 for *any* body, and a
+/// signature must verify whatever the body looks like.
+#[cfg(feature = "dkim")]
+mod dkim_properties {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use mime_message::dkim::{self, SignParams, SigningKey};
+    use mime_message::Message;
+    use proptest::prelude::*;
+    use sha2::{Digest, Sha256};
+
+    /// Relaxed body canonicalization written straight from RFC 6376 §3.4.4,
+    /// independent of the implementation under test.
+    fn relaxed_body(body: &str) -> Vec<u8> {
+        let normalised = body.replace("\r\n", "\n").replace('\r', "\n");
+        let mut lines: Vec<String> = normalised
+            .split('\n')
+            .map(|line| {
+                let mut out = String::new();
+                let mut pending_space = false;
+                for ch in line.chars() {
+                    if ch == ' ' || ch == '\t' {
+                        pending_space = true;
+                    } else {
+                        if pending_space {
+                            out.push(' ');
+                        }
+                        pending_space = false;
+                        out.push(ch);
+                    }
+                }
+                out
+            })
+            .collect();
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        let mut out = String::new();
+        for line in lines {
+            out.push_str(&line);
+            out.push_str("\r\n");
+        }
+        out.into_bytes()
+    }
+
+    fn message_with(body: String) -> Message {
+        Message::builder()
+            .from("a@example.com")
+            .expect("from")
+            .to("b@example.com")
+            .expect("to")
+            .subject("property")
+            .body(body)
+            .build()
+            .expect("build")
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+        /// The `bh=` we emit is the SHA-256 of the relaxed canonical body.
+        #[test]
+        fn body_hash_matches_the_rfc(body in any::<String>()) {
+            let key = SigningKey::from_ed25519_seed(&[61u8; 32]);
+            let signed = message_with(body.clone())
+                .sign(&key, &SignParams::new("example.com", "sel"))
+                .expect("sign");
+            let raw = String::from_utf8_lossy(&signed);
+            let header = &dkim::signatures(&raw)?[0];
+            let expected = Sha256::digest(relaxed_body(&body));
+            prop_assert_eq!(STANDARD.encode(expected), STANDARD.encode(&header.body_hash));
+        }
+
+        /// Whatever the body, sign → verify succeeds.
+        #[test]
+        fn sign_and_verify_any_body(body in any::<String>()) {
+            let key = SigningKey::from_ed25519_seed(&[63u8; 32]);
+            let signed = message_with(body)
+                .sign(&key, &SignParams::new("example.com", "sel"))
+                .expect("sign");
+            let raw = String::from_utf8_lossy(&signed);
+            prop_assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
+        }
+
+        /// Appending anything that survives canonicalization breaks the seal.
+        #[test]
+        fn appended_body_text_breaks_the_signature(body in "[ -~]{0,40}", extra in "[!-~]{1,10}") {
+            let key = SigningKey::from_ed25519_seed(&[67u8; 32]);
+            let signed = message_with(body)
+                .sign(&key, &SignParams::new("example.com", "sel"))
+                .expect("sign");
+            let raw = String::from_utf8_lossy(&signed).into_owned();
+            let tampered = format!("{raw}{extra}");
+            prop_assert!(dkim::verify(&tampered, &key.verifying_key()).is_err());
+        }
+
+        /// Every preserved header is covered: changing one must not verify.
+        #[test]
+        fn changing_a_preserved_header_breaks_the_signature(
+            value in "[a-zA-Z0-9](?:[a-zA-Z0-9 ]{0,18}[a-zA-Z0-9])?",
+        ) {
+            let key = SigningKey::from_ed25519_seed(&[71u8; 32]);
+            let mut message = message_with("body".to_string());
+            message.push_header(
+                mime_message::Header::new("X-Note", value.clone()).expect("header"),
+            );
+            let signed = message
+                .sign(&key, &SignParams::new("example.com", "sel"))
+                .expect("sign");
+            let raw = String::from_utf8_lossy(&signed).into_owned();
+            prop_assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
+            let tampered = raw.replace(
+                &format!("X-Note: {value}"),
+                "X-Note: something else",
+            );
+            prop_assert!(dkim::verify(&tampered, &key.verifying_key()).is_err());
+        }
     }
 }

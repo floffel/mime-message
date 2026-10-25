@@ -1,4 +1,11 @@
-//! Build and parse RFC 5322 / MIME messages — no SMTP, no I/O.
+//! Build and parse RFC 5322 / MIME messages — no SMTP, no I/O, no network.
+//!
+//! A parsed message keeps what the crate does not model: header fields it has
+//! no typed field for are preserved byte for byte ([`Header`]), `Bcc:`
+//! recipients land in [`Message::bcc`] instead of being dropped, and every MIME
+//! part keeps its `Content-ID` so `cid:` references can be resolved locally
+//! ([`cid`]). With the `dkim` feature the same message can be signed and
+//! verified ([`dkim`]).
 //!
 //! ```no_run
 //! use mime_message::{Attachment, Message};
@@ -41,14 +48,51 @@
 #![deny(missing_docs)]
 
 pub mod charset;
+pub mod cid;
 pub mod error;
+mod header;
 mod parse;
 mod render;
 pub mod rfc2047;
 pub mod transfer;
 
+#[cfg(feature = "dkim")]
+pub mod dkim;
+
 pub use error::{Error, Result};
+pub use header::Header;
 pub use parse::{parse, parse_with_limits, Limits};
+
+/// `tchar` from RFC 5322 §3.2.2: the bytes a header name may consist of.
+pub(crate) fn is_tchar(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// Header fields [`Message`] models itself; everything else is preserved.
+pub(crate) const MODELLED_HEADERS: [&str; 10] = [
+    "From",
+    "To",
+    "Cc",
+    "Bcc",
+    "Subject",
+    "Date",
+    "Message-ID",
+    "MIME-Version",
+    "Content-Type",
+    "Content-Transfer-Encoding",
+];
+
+/// Shortens `text` to at most `max` bytes without splitting a character.
+pub(crate) fn truncate(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut cut = max;
+    while cut > 0 && !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text[..cut].to_string()
+}
 
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
 ///
@@ -75,22 +119,33 @@ impl Mailbox {
         if raw.is_empty() {
             return Err(Error::EmptyHeader("mailbox"));
         }
-        if let (Some(start), Some(end)) = (raw.find('<'), raw.rfind('>')) {
-            // Brackets in the wrong order (">...<") would make the slice panic.
+        // The `<` that starts the address must be outside a quoted display
+        // name: `"Doe <Jr>" <a@b>` has two of them.
+        if let Some(start) = parse::angle_open(raw) {
+            let Some(end) = raw.rfind('>') else {
+                return Err(Error::InvalidMailbox(raw.to_string()));
+            };
+            // Brackets in the wrong order (">...<") must not panic the slice.
             if end <= start + 1 {
                 return Err(Error::InvalidMailbox(raw.to_string()));
             }
             let address = raw[start + 1..end].trim().to_string();
-            if !address.contains('@') {
+            parse::validate_address(&address)?;
+            let name = parse::unquote(raw[..start].trim());
+            if name.chars().any(char::is_control) {
                 return Err(Error::InvalidMailbox(raw.to_string()));
             }
-            let name = raw[..start].trim().trim_matches('"').to_string();
-            let name = if name.is_empty() { None } else { Some(name) };
-            return Ok(Self { name, address });
+            let name = name.trim();
+            return Ok(Self {
+                name: if name.is_empty() {
+                    None
+                } else {
+                    Some(name.to_string())
+                },
+                address,
+            });
         }
-        if !raw.contains('@') {
-            return Err(Error::InvalidMailbox(raw.to_string()));
-        }
+        parse::validate_address(raw)?;
         Ok(Self {
             name: None,
             address: raw.to_string(),
@@ -100,11 +155,12 @@ impl Mailbox {
 
 /// One attachment with its raw bytes.
 ///
-/// ```
+/// ```rust
 /// use mime_message::Attachment;
 ///
 /// let attachment = Attachment::new("rechnung.pdf", "application/pdf", b"%PDF".to_vec());
 /// assert_eq!(attachment.filename, "rechnung.pdf");
+/// assert!(attachment.content_id.is_none());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
@@ -114,6 +170,11 @@ pub struct Attachment {
     pub content_type: String,
     /// File contents.
     pub data: Vec<u8>,
+    /// `Content-ID` of the part, without angle brackets, when it has one.
+    ///
+    /// This is what a `cid:` reference in the HTML body points at; see
+    /// [`cid`] and [`Message::part_by_content_id`].
+    pub content_id: Option<String>,
 }
 
 impl Attachment {
@@ -134,13 +195,32 @@ impl Attachment {
             filename: filename.into(),
             content_type: content_type.into(),
             data,
+            content_id: None,
         }
+    }
+
+    /// Marks the part as inline content with a `Content-ID`.
+    ///
+    /// Angle brackets are optional and stripped, so `cid:logo` in the HTML
+    /// resolves to the same part as `cid:<logo>`.
+    ///
+    /// ```
+    /// use mime_message::Attachment;
+    ///
+    /// let logo = Attachment::new("logo.png", "image/png", vec![0x89, b'P'])
+    ///     .with_content_id("<logo@example.com>");
+    /// assert_eq!(logo.content_id.as_deref(), Some("logo@example.com"));
+    /// ```
+    #[must_use]
+    pub fn with_content_id(mut self, id: impl AsRef<str>) -> Self {
+        self.content_id = Some(cid::normalise(id.as_ref()).to_string());
+        self
     }
 }
 
 /// A message, either built or parsed.
 ///
-/// ```
+/// ```rust
 /// use mime_message::Message;
 ///
 /// let message = Message::parse("From: a@example.com\r\n\r\nbody")?;
@@ -155,6 +235,12 @@ pub struct Message {
     pub to: Vec<Mailbox>,
     /// Recipients for `Cc:`.
     pub cc: Vec<Mailbox>,
+    /// Recipients for `Bcc:`.
+    ///
+    /// Parsed from a `Bcc:` header when one is present, and never rendered: a
+    /// blind copy is defined by the recipient *not* seeing it, so the caller
+    /// puts these addresses into the SMTP envelope instead of the message.
+    pub bcc: Vec<Mailbox>,
     /// Subject, may contain non-ASCII.
     pub subject: String,
     /// Plain text body.
@@ -167,6 +253,8 @@ pub struct Message {
     pub message_id: Option<String>,
     /// Attachments; presence switches the message to `multipart/mixed`.
     pub attachments: Vec<Attachment>,
+    /// Header fields the crate does not model, in the order they arrived.
+    headers: Vec<Header>,
 }
 
 /// Step-by-step builder for [`Message`].
@@ -187,12 +275,14 @@ pub struct MessageBuilder {
     from: Option<Mailbox>,
     to: Vec<Mailbox>,
     cc: Vec<Mailbox>,
+    bcc: Vec<Mailbox>,
     subject: String,
     body: String,
     html_body: Option<String>,
     date: Option<String>,
     message_id: Option<String>,
     attachments: Vec<Attachment>,
+    headers: Vec<Header>,
 }
 
 impl Message {
@@ -269,6 +359,249 @@ impl Message {
     pub fn parse_with_limits(raw: &str, limits: &Limits) -> Result<Self> {
         parse::parse_with_limits(raw, limits)
     }
+
+    /// Every header field the crate does not model, in wire order.
+    ///
+    /// Names the crate turns into typed fields (`From`, `To`, `Cc`, `Bcc`,
+    /// `Subject`, `Date`, `Message-ID`, `MIME-Version`, `Content-Type`,
+    /// `Content-Transfer-Encoding`) are not repeated here — read them from
+    /// their field. Everything else (`Reply-To`, `In-Reply-To`,
+    /// `List-Unsubscribe`, `Authentication-Results`, custom `X-` fields, …) is
+    /// kept verbatim, duplicates included.
+    ///
+    /// ```rust
+    /// use mime_message::Message;
+    ///
+    /// let raw = concat!(
+    ///     "From: a@example.com\r\n",
+    ///     "X-Spam-Score: 1.5\r\n",
+    ///     "X-Spam-Score: 2.5\r\n",
+    ///     "\r\n",
+    ///     "hi",
+    /// );
+    /// let message = Message::parse(raw)?;
+    /// let scores: Vec<_> = message
+    ///     .headers()
+    ///     .iter()
+    ///     .filter(|header| header.is("X-Spam-Score"))
+    ///     .map(|header| header.value())
+    ///     .collect();
+    /// assert_eq!(scores, ["1.5", "2.5"]);
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    #[must_use]
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
+
+    /// The unfolded value of the first preserved header called `name`.
+    ///
+    /// The lookup is ASCII case-insensitive and covers only headers that are
+    /// not modelled as typed fields; use `message.subject` and friends for
+    /// those instead.
+    ///
+    /// ```rust
+    /// use mime_message::Message;
+    ///
+    /// let message = Message::parse(
+    ///     "From: a@example.com\r\nReply-To: replies@example.com\r\n\r\nhi",
+    /// )?;
+    /// assert_eq!(message.header("reply-to"), Some("replies@example.com"));
+    /// assert_eq!(message.header("Subject"), None);
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    #[must_use]
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|header| header.is(name))
+            .map(Header::value)
+    }
+
+    /// Appends a header field; duplicates of the same name are kept.
+    ///
+    /// ```rust
+    /// use mime_message::{Header, Message};
+    ///
+    /// let mut message = Message::parse("From: a@example.com\r\n\r\nhi")?;
+    /// message.push_header(Header::new("X-Trace", "abc")?);
+    /// let bytes = message.render()?;
+    /// let raw = String::from_utf8_lossy(&bytes);
+    /// assert!(raw.contains("X-Trace: abc\r\n"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    pub fn push_header(&mut self, header: Header) {
+        self.headers.push(header);
+    }
+
+    /// Replaces every preserved header called like `header`, in place.
+    ///
+    /// When no such header exists it is appended. The first old entry keeps its
+    /// position, later duplicates are dropped.
+    ///
+    /// ```rust
+    /// use mime_message::{Header, Message};
+    ///
+    /// let mut message = Message::parse("From: a@example.com\r\nX-A: 1\r\n\r\nhi")?;
+    /// message.set_header(Header::new("X-A", "2")?);
+    /// assert_eq!(message.header("X-A"), Some("2"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    pub fn set_header(&mut self, header: Header) {
+        let name = header.name().to_string();
+        let Some(first) = self.headers.iter().position(|old| old.is(&name)) else {
+            self.headers.push(header);
+            return;
+        };
+        self.headers[first] = header;
+        let mut index = first + 1;
+        while index < self.headers.len() {
+            if self.headers[index].is(&name) {
+                self.headers.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// Removes the first preserved header called `name` and returns it.
+    ///
+    /// ```rust
+    /// use mime_message::Message;
+    ///
+    /// let mut message = Message::parse("From: a@example.com\r\nX-A: 1\r\n\r\nhi")?;
+    /// assert!(message.remove_header("X-A").is_some());
+    /// assert!(message.header("X-A").is_none());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    pub fn remove_header(&mut self, name: &str) -> Option<Header> {
+        let index = self.headers.iter().position(|header| header.is(name))?;
+        Some(self.headers.remove(index))
+    }
+
+    /// The part with this `Content-ID`, if any.
+    ///
+    /// `id` may be written as it appears in HTML (`cid:logo@example.com`,
+    /// `cid:<logo@example.com>`) or as the bare id. Content-IDs are
+    /// case-sensitive (RFC 2392), and no network access happens.
+    ///
+    /// ```rust
+    /// use mime_message::{Attachment, Message};
+    ///
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("hi")
+    ///     .html_body("<img src=\"cid:logo\">")
+    ///     .attachment(
+    ///         Attachment::new("logo.png", "image/png", vec![0x89])
+    ///             .with_content_id("logo"),
+    ///     )
+    ///     .build()?;
+    /// let part = message.part_by_content_id("cid:logo").expect("inline part");
+    /// assert_eq!(part.content_type, "image/png");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    #[must_use]
+    pub fn part_by_content_id(&self, id: &str) -> Option<&Attachment> {
+        let wanted = cid::normalise(id);
+        self.inline_parts()
+            .find(|part| part.content_id.as_deref() == Some(wanted))
+    }
+
+    /// Every attachment that carries a `Content-ID`.
+    ///
+    /// ```rust
+    /// use mime_message::{Attachment, Message};
+    ///
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("hi")
+    ///     .attachment(Attachment::new("a.pdf", "application/pdf", vec![1]))
+    ///     .attachment(Attachment::new("b.png", "image/png", vec![2]).with_content_id("b"))
+    ///     .build()?;
+    /// assert_eq!(message.inline_parts().count(), 1);
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    pub fn inline_parts(&self) -> impl Iterator<Item = &Attachment> + '_ {
+        self.attachments
+            .iter()
+            .filter(|attachment| attachment.content_id.is_some())
+    }
+
+    /// Rewrites `cid:` references in `html` to `data:` URIs of the parts.
+    ///
+    /// The content is embedded as `data:<type>;base64,<bytes>`, so the result
+    /// renders in any browser without network access. References without a
+    /// matching part are left untouched — a broken image is better than a
+    /// silently dropped one. For a URL-based rewrite (for example to an HTTP
+    /// endpoint your webmail serves) use [`cid::rewrite`]
+    /// with your own resolver.
+    ///
+    /// ```rust
+    /// use mime_message::{Attachment, Message};
+    ///
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("hi")
+    ///     .html_body("<img src=\"cid:logo\"> <img src=\"cid:missing\">")
+    ///     .attachment(
+    ///         Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
+    ///             .with_content_id("logo"),
+    ///     )
+    ///     .build()?;
+    /// let html = message.rewrite_cid_references("<img src=\"cid:logo\">");
+    /// assert!(html.starts_with("<img src=\"data:image/png;base64,"));
+    /// assert_eq!(
+    ///     message.rewrite_cid_references("<img src=\"cid:missing\">"),
+    ///     "<img src=\"cid:missing\">",
+    /// );
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    #[must_use]
+    pub fn rewrite_cid_references(&self, html: &str) -> String {
+        cid::rewrite(html, |reference| {
+            self.part_by_content_id(reference)
+                .map(|part| cid::data_uri(&part.content_type, &part.data))
+        })
+    }
+}
+
+#[cfg(feature = "dkim")]
+impl Message {
+    /// Signs the message and returns the bytes to send, signature included.
+    ///
+    /// This is a thin wrapper around `dkim::sign`; see there for the
+    /// parameters and the failure modes.
+    ///
+    /// ```rust
+    /// use mime_message::dkim::{SignParams, SigningKey};
+    /// use mime_message::Message;
+    ///
+    /// let key = SigningKey::from_ed25519_seed(&[1u8; 32]);
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .body("hi")
+    ///     .build()?;
+    /// let signed = message.sign(&key, &SignParams::new("example.com", "sel"))?;
+    /// assert!(String::from_utf8_lossy(&signed).contains("a=ed25519-sha256"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rendering errors, plus [`Error::InvalidSignature`] when the message has
+    /// nothing signable.
+    pub fn sign(
+        &self,
+        key: &crate::dkim::SigningKey,
+        params: &crate::dkim::SignParams,
+    ) -> Result<Vec<u8>> {
+        crate::dkim::sign(self, key, params)
+    }
 }
 
 impl MessageBuilder {
@@ -332,6 +665,52 @@ impl MessageBuilder {
     pub fn cc(mut self, raw: &str) -> Result<Self> {
         self.cc.push(Mailbox::parse(raw)?);
         Ok(self)
+    }
+
+    /// Adds one `Bcc:` recipient.
+    ///
+    /// The address is parsed like `To:` but never rendered, so a blind copy
+    /// stays blind; read [`Message::bcc`] to put it into the SMTP envelope.
+    ///
+    /// ```rust
+    /// # use mime_message::Message;
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .bcc("secret@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.bcc[0].address, "secret@example.com");
+    /// let bytes = message.render()?;
+    /// let raw = String::from_utf8_lossy(&bytes);
+    /// assert!(!raw.contains("secret@example.com"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed mailboxes.
+    pub fn bcc(mut self, raw: &str) -> Result<Self> {
+        self.bcc.push(Mailbox::parse(raw)?);
+        Ok(self)
+    }
+
+    /// Appends a header field the crate does not model.
+    ///
+    /// ```rust
+    /// use mime_message::{Header, Message};
+    ///
+    /// let message = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .to("b@example.com")?
+    ///     .header(Header::new("Reply-To", "replies@example.com")?)
+    ///     .build()?;
+    /// assert_eq!(message.header("reply-to"), Some("replies@example.com"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    #[must_use]
+    pub fn header(mut self, header: Header) -> Self {
+        self.headers.push(header);
+        self
     }
 
     /// Sets the subject.
@@ -445,34 +824,43 @@ impl MessageBuilder {
 
     /// Finishes the message.
     ///
-    /// ```
-    /// # use mime_message::{Error, Message};
+    /// ```rust
+    /// use mime_message::{Error, Message};
     /// // A recipient is mandatory.
     /// assert_eq!(
     ///     Message::builder().from("a@example.com")?.build().unwrap_err(),
     ///     Error::NoRecipients
     /// );
+    /// // A blind copy counts as a recipient …
+    /// let bcc_only = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .bcc("b@example.com")?
+    ///     .build()?;
+    /// assert!(bcc_only.to.is_empty());
     /// # Ok::<(), mime_message::Error>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Fails when `From:` is missing or there is no recipient.
+    /// Fails when `From:` is missing or there is neither a `To:` nor a `Bcc:`
+    /// recipient.
     pub fn build(self) -> Result<Message> {
         let from = self.from.ok_or(Error::EmptyHeader("From"))?;
-        if self.to.is_empty() {
+        if self.to.is_empty() && self.bcc.is_empty() {
             return Err(Error::NoRecipients);
         }
         Ok(Message {
             from,
             to: self.to,
             cc: self.cc,
+            bcc: self.bcc,
             subject: self.subject,
             body: self.body,
             html_body: self.html_body,
             date: self.date,
             message_id: self.message_id,
             attachments: self.attachments,
+            headers: self.headers,
         })
     }
 }

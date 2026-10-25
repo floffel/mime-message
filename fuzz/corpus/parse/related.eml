@@ -1,0 +1,25 @@
+From: shop@example.com
+To: kunde@example.com
+Subject: inline
+Content-Type: multipart/related; boundary="rel"
+
+--rel
+Content-Type: multipart/alternative; boundary="alt"
+
+--alt
+Content-Type: text/plain; charset=utf-8
+
+Grüße
+--alt
+Content-Type: text/html; charset=utf-8
+
+<p>Grüße <img src="cid:logo@example.com"></p>
+--alt--
+--rel
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-ID: <logo@example.com>
+Content-Disposition: inline
+
+iVBORw0KGgo=
+--rel--

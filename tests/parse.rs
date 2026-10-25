@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use mime_message::{parse, parse_with_limits, Attachment, Error, Limits, Mailbox, Message};
+use mime_message::{parse, parse_with_limits, Attachment, Error, Limits, Message};
 
 fn header_only(headers: &str) -> String {
     format!("{headers}\r\n\r\n")
@@ -696,23 +696,15 @@ fn builder_render_parse_roundtrip_with_alternative_and_attachment() {
 
 #[test]
 fn parsing_a_rendered_message_keeps_mailboxes_with_awkward_names() {
-    let built = Message {
-        from: Mailbox {
-            name: Some("a \"quoted\", name".to_string()),
-            address: "a@example.com".to_string(),
-        },
-        to: vec![Mailbox {
-            name: Some("Back\\slash".to_string()),
-            address: "b@example.com".to_string(),
-        }],
-        cc: Vec::new(),
-        subject: "x".to_string(),
-        body: "y".to_string(),
-        html_body: None,
-        date: None,
-        message_id: None,
-        attachments: Vec::new(),
-    };
+    let built = Message::builder()
+        .from("a \"quoted\", name <a@example.com>")
+        .unwrap()
+        .to("Back\\slash <b@example.com>")
+        .unwrap()
+        .subject("x")
+        .body("y")
+        .build()
+        .unwrap();
     let raw = String::from_utf8(built.render().unwrap()).unwrap();
     assert_eq!(parse(&raw).unwrap(), built);
 }
