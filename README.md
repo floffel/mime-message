@@ -147,6 +147,11 @@ assert_eq!(signature.domain, "example.com");
   `SignatureMismatch`, `InvalidSignature`.
 - No DNS, no OCSP, no key cache, no clock. `Debug` on `SigningKey` prints the
   algorithm only.
+- Known dependency advisory: `rsa` 0.9 carries RUSTSEC-2023-0071 (the "Marvin"
+  timing side channel in PKCS#1 v1.5 *decryption* padding, no upstream fix yet).
+  This crate never decrypts — it signs with a caller-supplied key and verifies
+  with public keys — so that path is unreachable; the ignore and its reasoning
+  live in `deny.toml`.
 
 **Test-vector status.** RFC 8463 Appendix A.3 verifies for *both* of its
 signatures (RSA and Ed25519) with the published public keys, and the Ed25519

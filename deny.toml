@@ -1,6 +1,16 @@
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 ("Marvin attack"): `rsa`'s PKCS#1 v1.5 padding is not
+    # constant time, which leaks private-key timing to an attacker who can
+    # submit ciphertexts and observe the response - a decryption oracle.
+    # This crate never decrypts. It signs (fixed key, caller-supplied message,
+    # no oracle) and verifies with public keys only, so the vulnerable padding
+    # path is unreachable. `patched = []` upstream, so 0.9 is the only option
+    # for a DKIM RSA signer today; re-check when `rsa` ships a fix.
+    "RUSTSEC-2023-0071",
+]
 
 [licenses]
 version = 2

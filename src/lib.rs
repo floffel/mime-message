@@ -5,7 +5,7 @@
 //! recipients land in [`Message::bcc`] instead of being dropped, and every MIME
 //! part keeps its `Content-ID` so `cid:` references can be resolved locally
 //! ([`cid`]). With the `dkim` feature the same message can be signed and
-//! verified ([`dkim`]).
+//! verified (`dkim`).
 //!
 //! ```no_run
 //! use mime_message::{Attachment, Message};
