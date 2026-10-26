@@ -1,37 +1,46 @@
 //! Charset decoding for MIME bodies and RFC 2047 encoded-words.
 //!
+//! Label resolution and decoding are delegated to [`encoding_rs`], the WHATWG
+//! encoding registry that browsers ship: every label listed there is understood
+//! (`Shift_JIS`, `GBK`, `Big5`, `KOI8-R`, `ISO-8859-2` … `ISO-8859-16`,
+//! `windows-125x`, `UTF-16` LE/BE, …), together with the aliases the registry
+//! defines for it. A short alias table keeps the non-standard spellings that
+//! appear in real mail working (`utf16`, `latin9`), because RFC 2978 asks
+//! receivers to be liberal about how a sender spells a label.
+//!
 //! Only UTF-8 is decoded strictly. Everything else is decoded permissively so
-//! that a wrong or unknown `charset` parameter never fails a parse: ISO-8859-1
-//! and US-ASCII are interpreted the way mail clients do (as Windows-1252 for
-//! the `0x80..=0x9F` range), ISO-8859-15 gets its eight substitutions, UTF-16
-//! is decoded through `char::decode_utf16`, and unknown labels fall back to
-//! UTF-8 with replacement characters.
+//! that a wrong or unknown `charset` parameter never fails a parse: US-ASCII and
+//! ISO-8859-1 are interpreted the way mail clients do (as Windows-1252, so
+//! ISO-8859-1 files decode correctly too), malformed byte sequences become
+//! U+FFFD, and an unknown or empty label falls back to UTF-8 with replacement
+//! characters.
+//!
+//! A byte-order mark is **not** stripped here: it decodes to U+FEFF and stays
+//! part of the text, because `decode(render(value)) == value` is an invariant of
+//! this crate - a subject may legitimately start with U+FEFF. Callers that
+//! display freshly received mail can trim it themselves.
 
-/// Windows-1252 replacements for `0x80..=0x9F` (undefined slots stay C1).
-const CP1252: [char; 32] = [
-    '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
-    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}',
-    '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
-    '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
-];
+use encoding_rs::{Encoding, ISO_8859_15, UTF_16BE, UTF_16LE, UTF_8};
 
-/// ISO-8859-15 differences from ISO-8859-1.
-const LATIN9: [(u8, char); 8] = [
-    (0xA4, '\u{20AC}'),
-    (0xA6, '\u{0160}'),
-    (0xA8, '\u{0161}'),
-    (0xB4, '\u{017D}'),
-    (0xB8, '\u{017E}'),
-    (0xBC, '\u{0152}'),
-    (0xBD, '\u{0153}'),
-    (0xBE, '\u{0178}'),
+/// Spellings that appear in real mail but are not WHATWG labels.
+///
+/// `Encoding::for_label` is the only resolver for the standard registry; this
+/// table exists solely so the labels the crate accepted before it delegated
+/// decoding keep their meaning. Nothing else belongs here.
+const NON_STANDARD_LABELS: [(&str, &Encoding); 5] = [
+    ("utf16", UTF_16LE),
+    ("utf16le", UTF_16LE),
+    ("utf16be", UTF_16BE),
+    ("latin9", ISO_8859_15),
+    ("latin-9", ISO_8859_15),
 ];
 
 /// Decodes `bytes` from `charset` into a `String`.
 ///
-/// The label is matched case-insensitively and tolerates surrounding quotes and
-/// whitespace. Unknown labels never fail: they fall back to UTF-8 with
-/// replacement characters.
+/// The label is matched case-insensitively, tolerates surrounding quotes and
+/// whitespace and is resolved through the WHATWG encoding registry, so all
+/// registered labels work - not only the Latin ones. Unknown labels never fail:
+/// they fall back to UTF-8 with replacement characters.
 ///
 /// ```
 /// use mime_message::charset;
@@ -40,79 +49,37 @@ const LATIN9: [(u8, char); 8] = [
 /// assert_eq!(charset::decode(b"Gr\xfc\xdfe", "iso-8859-1"), "Grüße");
 /// assert_eq!(charset::decode(b"\x80", "windows-1252"), "€");
 /// assert_eq!(charset::decode(b"Gr\xfc\xdfe", "iso-8859-15"), "Grüße");
+/// // Labels outside the Latin family are decoded with their own tables.
+/// assert_eq!(charset::decode(b"\x82\xa0", "shift_jis"), "あ");
+/// assert_eq!(charset::decode(b"\xc4\xe3\xba\xc3", "gbk"), "你好");
+/// assert_eq!(charset::decode(b"\xf0\xd2\xc9\xd7\xc5\xd4", "koi8-r"), "Привет");
 /// // Unknown labels are decoded as UTF-8 rather than rejected.
 /// assert_eq!(charset::decode(b"plain", "x-no-such-charset"), "plain");
 /// ```
 #[must_use]
 pub fn decode(bytes: &[u8], charset: &str) -> String {
-    let label = normalise(charset);
-    let decoder: fn(&[u8]) -> String = match label.as_str() {
-        "us-ascii" | "ascii" | "ansi_x3.4-1968" | "iso-ir-6" | "iso-8859-1" | "iso8859-1"
-        | "latin1" | "latin-1" | "l1" | "cp1252" | "windows-1252" | "x-cp1252" => decode_cp1252,
-        "iso-8859-15" | "iso8859-15" | "latin9" | "latin-9" | "l9" => decode_latin9,
-        "utf-16" | "utf-16le" | "utf16" => decode_utf16_le,
-        "utf-16be" => decode_utf16_be,
-        // UTF-8, and the permissive fallback for unknown labels.
-        _ => decode_utf8,
-    };
-    decoder(bytes)
+    // `decode_without_bom_handling` keeps the declared label authoritative and
+    // leaves a BOM in the text (see the module note on round-tripping).
+    let (text, _had_errors) = resolve(charset).decode_without_bom_handling(bytes);
+    text.into_owned()
 }
 
-fn decode_utf8(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+/// Resolves a charset label to its encoding, falling back to UTF-8.
+fn resolve(charset: &str) -> &'static Encoding {
+    let label = normalise(charset);
+    if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
+        return encoding;
+    }
+    NON_STANDARD_LABELS
+        .iter()
+        .find(|(alias, _)| *alias == label)
+        .map_or(UTF_8, |(_, encoding)| encoding)
 }
 
 /// Canonicalises a charset label: trims, drops quotes, lowercases.
 fn normalise(charset: &str) -> String {
     charset.trim().trim_matches('"').trim().to_ascii_lowercase()
 }
-
-fn decode_cp1252(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| {
-            if (0x80..=0x9F).contains(&b) {
-                CP1252[usize::from(b - 0x80)]
-            } else {
-                char::from(b)
-            }
-        })
-        .collect()
-}
-
-fn decode_latin9(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| {
-            LATIN9
-                .iter()
-                .find(|(byte, _)| *byte == b)
-                .map_or_else(|| char::from(b), |(_, replacement)| *replacement)
-        })
-        .collect()
-}
-
-fn decode_utf16_le(bytes: &[u8]) -> String {
-    decode_utf16(bytes, true)
-}
-
-fn decode_utf16_be(bytes: &[u8]) -> String {
-    decode_utf16(bytes, false)
-}
-
-fn decode_utf16(bytes: &[u8], little_endian: bool) -> String {
-    let units = bytes.as_chunks::<2>().0.iter().map(|pair| {
-        if little_endian {
-            u16::from_le_bytes(*pair)
-        } else {
-            u16::from_be_bytes(*pair)
-        }
-    });
-    char::decode_utf16(units)
-        .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +94,8 @@ mod tests {
         // Clients treat ISO-8859-1 bytes in 0x80..=0x9F as Windows-1252.
         assert_eq!(decode(&[0x80], "iso-8859-1"), "€");
         assert_eq!(decode(&[0x93], "latin1"), "\u{201C}");
+        // Undefined Windows-1252 slots stay C1 controls rather than vanishing.
+        assert_eq!(decode(&[0x81], "windows-1252"), "\u{0081}");
     }
 
     #[test]
@@ -148,6 +117,55 @@ mod tests {
         }
         assert_eq!(decode(&le, "utf-16le"), text);
         assert_eq!(decode(&be, "utf-16be"), text);
+        // Surrogate pairs are joined, not replaced one half at a time.
+        let emoji = "🚀";
+        let units: Vec<u8> = emoji.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(decode(&units, "utf-16"), emoji);
+    }
+
+    #[test]
+    fn labels_outside_the_old_four_families_use_their_own_tables() {
+        // Each of these decoded as UTF-8 (mojibake) before the registry was used.
+        assert_eq!(decode(b"\x82\xa0", "shift_jis"), "あ");
+        assert_eq!(decode(b"\xc4\xe3\xba\xc3", "gbk"), "你好");
+        assert_eq!(decode(b"\xa4\x40", "big5"), "一");
+        assert_eq!(decode(&[0xB1], "iso-8859-2"), "ą");
+        assert_eq!(decode(b"\xf0\xd2\xc9\xd7\xc5\xd4", "koi8-r"), "Привет");
+        // Windows-1251, not a Latin table: 0xCF 0xF0 0xE8 is "При".
+        assert_eq!(decode(b"\xcf\xf0\xe8", "windows-1251"), "При");
+    }
+
+    #[test]
+    fn registry_aliases_resolve_to_the_same_encoding() {
+        for label in ["sjis", "shift-jis", "x-sjis", "SHIFT_JIS"] {
+            assert_eq!(decode(b"\x82\xa0", label), "あ", "label {label}");
+        }
+        for label in ["latin1", "l1", "cp1252", "ansi_x3.4-1968", "us-ascii"] {
+            assert_eq!(decode(&[0x80], label), "€", "label {label}");
+        }
+    }
+
+    #[test]
+    fn non_standard_labels_kept_from_before_are_still_understood() {
+        let units: Vec<u8> = "Grüße".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(decode(&units, "utf16"), "Grüße");
+        assert_eq!(decode(&units, "utf16le"), "Grüße");
+        assert_eq!(decode(&[0xA4], "latin9"), "€");
+        assert_eq!(decode(&[0xA4], "latin-9"), "€");
+    }
+
+    #[test]
+    fn a_byte_order_mark_stays_part_of_the_text() {
+        // Round-trip fidelity: a value may legitimately start with U+FEFF, so the
+        // BOM is decoded to a character and only a displaying caller trims it.
+        let mut utf8 = vec![0xEF, 0xBB, 0xBF];
+        utf8.extend_from_slice("Grüße".as_bytes());
+        assert_eq!(decode(&utf8, "utf-8"), "\u{feff}Grüße");
+        let mut be = vec![0xFE, 0xFF];
+        be.extend("Grüße".encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(decode(&be, "utf-16be"), "\u{feff}Grüße");
+        // The same holds for a U+FEFF that is not at the start.
+        assert_eq!(decode("a\u{feff}b".as_bytes(), "utf-8"), "a\u{feff}b");
     }
 
     #[test]
@@ -155,6 +173,8 @@ mod tests {
         assert_eq!(decode(b"Gr\xc3\xbc\xc3\x9fe", "x-broken"), "Grüße");
         assert_eq!(decode(b"abc", ""), "abc");
         assert_eq!(decode(b"abc", "  \"UTF-8\"  "), "abc");
+        // A label that is far outside the registry (unicode, punctuation) too.
+        assert_eq!(decode(b"abc", "utf-8; charset=utf-8"), "abc");
     }
 
     #[test]
@@ -167,7 +187,21 @@ mod tests {
 
     #[test]
     fn odd_utf16_length_does_not_panic() {
-        assert_eq!(decode(&[0x41], "utf-16"), "");
+        // WHATWG replacement behaviour: the trailing lone byte is one malformed
+        // sequence and becomes U+FFFD rather than being dropped silently.
+        assert_eq!(decode(&[0x41], "utf-16"), "\u{FFFD}");
+        assert_eq!(decode(&[0x41, 0x00, 0x42], "utf-16le"), "A\u{FFFD}");
         assert_eq!(decode(&[], "utf-16be"), "");
+    }
+
+    #[test]
+    fn an_unpaired_utf16_surrogate_becomes_one_replacement_character() {
+        // 0xD800 is a high surrogate with no low surrogate after it.
+        assert_eq!(decode(&[0xD8, 0x00], "utf-16be"), "\u{FFFD}");
+        // A high surrogate followed by a normal BMP unit: one replacement, then
+        // the unit itself - not two replacements.
+        assert_eq!(decode(&[0xD8, 0x00, 0x00, 0x41], "utf-16be"), "\u{FFFD}A");
+        // A lone low surrogate is malformed on its own.
+        assert_eq!(decode(&[0xDC, 0x00], "utf-16be"), "\u{FFFD}");
     }
 }

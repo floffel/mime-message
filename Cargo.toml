@@ -14,6 +14,8 @@ exclude = [".github/**", "deny.toml", "fuzz/**"]
 
 [dependencies]
 base64 = "0.23"
+# Charset labels and decoding tables: the WHATWG registry, not a hand-rolled list.
+encoding_rs = "0.8"
 thiserror = "2"
 
 # DKIM is optional: it pulls in RSA/Ed25519 and a SHA-256 implementation.

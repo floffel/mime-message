@@ -885,3 +885,82 @@ fn mailbox_parse_rejects_reversed_brackets() {
         Error::InvalidMailbox("a>b<c@d".to_string())
     );
 }
+
+// ---------------------------------------------------------------------------
+// Charset registry: every WHATWG label, not a closed list of four families
+// ---------------------------------------------------------------------------
+
+fn base64_bytes(bytes: &[u8]) -> String {
+    STANDARD.encode(bytes)
+}
+
+#[test]
+fn a_shift_jis_body_decodes_instead_of_turning_into_mojibake() {
+    // "こんにちは" in Shift_JIS.
+    let sjis = [0x82u8, 0xB1, 0x82, 0xF1, 0x82, 0xC9, 0x82, 0xBF, 0x82, 0xCD];
+    let raw = with_from(&format!(
+        "Content-Type: text/plain; charset=\"Shift_JIS\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        base64_bytes(&sjis)
+    ));
+    assert_eq!(parse(&raw).unwrap().body, "こんにちは");
+}
+
+#[test]
+fn a_gbk_body_decodes_through_its_alias() {
+    // "你好" in GBK, labelled with the alias gb2312.
+    let raw = with_from(&format!(
+        "Content-Type: text/plain; charset=gb2312\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        base64_bytes(&[0xC4, 0xE3, 0xBA, 0xC3])
+    ));
+    assert_eq!(parse(&raw).unwrap().body, "你好");
+}
+
+#[test]
+fn a_latin2_body_does_not_fall_back_to_utf8() {
+    // 0xB1 is "ą" in ISO-8859-2 and would be a replacement character as UTF-8.
+    let raw = with_from(&format!(
+        "Content-Type: text/plain; charset=iso-8859-2\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        base64_bytes(&[0xB1, 0x62, 0x63])
+    ));
+    assert_eq!(parse(&raw).unwrap().body, "ąbc");
+}
+
+#[test]
+fn a_koi8r_body_decodes_cyrillic() {
+    let raw = with_from(&format!(
+        "Content-Type: text/plain; charset=koi8-r\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+        base64_bytes(&[0xF0, 0xD2, 0xC9, 0xD7, 0xC5, 0xD4])
+    ));
+    assert_eq!(parse(&raw).unwrap().body, "Привет");
+}
+
+#[test]
+fn a_utf16_body_decodes_both_byte_orders() {
+    for (label, to_units) in [
+        ("utf-16", u16::to_le_bytes as fn(u16) -> [u8; 2]),
+        ("utf-16be", u16::to_be_bytes as fn(u16) -> [u8; 2]),
+    ] {
+        let units: Vec<u8> = "Grüße".encode_utf16().flat_map(to_units).collect();
+        let raw = with_from(&format!(
+            "Content-Type: text/plain; charset={label}\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+            base64_bytes(&units)
+        ));
+        assert_eq!(parse(&raw).unwrap().body, "Grüße", "label {label}");
+    }
+}
+
+#[test]
+fn a_non_latin_charset_in_an_rfc2047_word_decodes() {
+    let word = format!("=?ISO-8859-2?B?{}?=", base64_bytes(&[0xB1]));
+    let raw = with_from(&format!("Subject: {word}\r\n\r\nx"));
+    assert_eq!(parse(&raw).unwrap().subject, "ą");
+
+    let sjis = format!("=?Shift_JIS?B?{}?=", base64_bytes(&[0x82, 0xA0]));
+    let raw = with_from(&format!("Subject: {sjis}\r\n\r\nx"));
+    assert_eq!(parse(&raw).unwrap().subject, "あ");
+}

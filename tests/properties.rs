@@ -330,6 +330,22 @@ proptest! {
         };
         prop_assert_eq!(second, first);
     }
+
+    /// UTF-8 text decodes back to itself under the `utf-8` label: decoding is
+    /// lossless, including a leading byte-order mark.
+    #[test]
+    fn utf8_round_trips_through_the_registry(text in any::<String>()) {
+        prop_assert_eq!(mime_message::charset::decode(text.as_bytes(), "utf-8"), text);
+    }
+
+    /// Windows-1252 maps all 256 byte values, so arbitrary input decodes to
+    /// exactly as many characters and never hits a replacement character.
+    #[test]
+    fn windows_1252_decodes_every_byte(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
+        let decoded = mime_message::charset::decode(&bytes, "windows-1252");
+        prop_assert!(!decoded.contains(char::REPLACEMENT_CHARACTER));
+        prop_assert_eq!(decoded.chars().count(), bytes.len());
+    }
 }
 
 /// DKIM properties: the body hash must follow RFC 6376 for *any* body, and a
