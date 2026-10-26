@@ -183,8 +183,10 @@ Documented rather than silently missing:
 - **No `rsa-sha1`, no `l=` on signing.** RFC 8301 deprecates SHA-1 and `l=` only
   weakens a signature. Both are still parsed (and `l=` honoured) on the
   verification side, because real mail carries them.
-- **Charset set is closed.** Anything outside the list above is decoded as
-  UTF-8-with-replacement, which is what real mail needs in practice.
+- **No charset sniffing.** A missing or unknown `charset` label falls back to
+  UTF-8-with-replacement; the bytes are never sniffed for encoding. Every label
+  the WHATWG registry knows *is* resolved (see *Charsets* above), so what is
+  excluded is guessing, not coverage.
 - **Unknown headers are preserved, not interpreted.** `Reply-To` is not turned
   into a `Mailbox`, `Date` is not parsed into a timestamp: a re-render must keep
   the sender's bytes, and interpretation belongs to the caller.
