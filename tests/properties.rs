@@ -5,7 +5,9 @@
 //! the parser must read back into an equal `Message` (modulo CRLF normalisation
 //! of the body and trimming of header values, both documented behaviour).
 
-use mime_message::{parse, Attachment, Mailbox, Message};
+use std::fmt::Write as _;
+
+use mime_message::{parse, parse_with_limits, Attachment, Limits, Mailbox, Message};
 use proptest::prelude::*;
 
 const CONTENT_TYPES: [&str; 4] = [
@@ -345,6 +347,52 @@ proptest! {
         let decoded = mime_message::charset::decode(&bytes, "windows-1252");
         prop_assert!(!decoded.contains(char::REPLACEMENT_CHARACTER));
         prop_assert_eq!(decoded.chars().count(), bytes.len());
+    }
+
+    /// The nesting limit counts containers, not entities: a chain of `containers`
+    /// `multipart` levels around one flat leaf parses exactly when its deepest container
+    /// is within `max_depth`, and a failure reports the configured limit.
+    #[test]
+    fn nesting_limit_tracks_container_depth(containers in 0usize..8, max_depth in 0usize..8) {
+        let mut raw = String::from("From: a@example.com\r\n");
+        for level in 0..containers {
+            write!(
+                raw,
+                "Content-Type: multipart/mixed; boundary=b{level}\r\n\r\n--b{level}\r\n"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        raw.push_str("Content-Type: text/plain\r\n\r\nleaf\r\n");
+        for level in (0..containers).rev() {
+            write!(raw, "--b{level}--\r\n").expect("writing to a String cannot fail");
+        }
+
+        let mut limits = Limits::default();
+        limits.max_depth = max_depth;
+
+        match parse_with_limits(&raw, &limits) {
+            Ok(message) => {
+                prop_assert!(
+                    containers.saturating_sub(1) <= max_depth,
+                    "{} containers parsed with max_depth {}", containers, max_depth
+                );
+                prop_assert_eq!(message.body.trim_end(), "leaf");
+            }
+            Err(error) => {
+                prop_assert!(
+                    containers.saturating_sub(1) > max_depth,
+                    "{} containers rejected with max_depth {}: {:?}",
+                    containers, max_depth, error
+                );
+                prop_assert_eq!(
+                    error,
+                    mime_message::Error::LimitExceeded {
+                        what: "nesting depth",
+                        limit: max_depth,
+                    }
+                );
+            }
+        }
     }
 }
 

@@ -32,23 +32,41 @@ const MAX_HEADER_LINE: usize = 8 * 1024;
 /// ```
 /// use mime_message::{parse_with_limits, Limits};
 ///
+/// // `max_depth` counts `multipart` containers, not entities: the top-level one is
+/// // depth 0, so `1` accepts two levels of nesting and refuses a third.
 /// let mut limits = Limits::default();
-/// limits.max_depth = 2;
+/// limits.max_depth = 1;
 ///
-/// // A three-level multipart message is rejected instead of recursing.
-/// let nested = concat!(
+/// let two_levels = concat!(
+///     "From: a@example.com\r\n",
+///     "Content-Type: multipart/mixed; boundary=a\r\n\r\n",
+///     "--a\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n",
+///     "--b\r\n\r\nhi\r\n--b--\r\n--a--\r\n",
+/// );
+/// assert!(parse_with_limits(two_levels, &limits).is_ok());
+///
+/// let three_levels = concat!(
 ///     "From: a@example.com\r\n",
 ///     "Content-Type: multipart/mixed; boundary=a\r\n\r\n",
 ///     "--a\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n",
 ///     "--b\r\nContent-Type: multipart/mixed; boundary=c\r\n\r\n",
 ///     "--c\r\n\r\nhi\r\n--c--\r\n--b--\r\n--a--\r\n",
 /// );
-/// assert!(parse_with_limits(nested, &limits).is_err());
+/// assert!(parse_with_limits(three_levels, &limits).is_err());
+///
+/// // A body that is not multipart never meets the limit, so `0` still parses it.
+/// let mut flat = Limits::default();
+/// flat.max_depth = 0;
+/// assert!(parse_with_limits("From: a@example.com\r\n\r\nhi", &flat).is_ok());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Limits {
-    /// Maximum `multipart/*` nesting depth (the top-level entity is depth 0).
+    /// Maximum depth of a `multipart/*` entity, the top-level entity being depth
+    /// 0. The limit counts containers, not entities: a leaf part is accepted at
+    /// any depth a container already reached, a body that is not multipart never
+    /// touches it, and `0` therefore accepts a flat message plus one container
+    /// while refusing nesting.
     pub max_depth: usize,
     /// Maximum number of MIME entities, the top-level one included.
     pub max_parts: usize,
@@ -176,12 +194,6 @@ impl Parser<'_> {
     }
 
     fn parse_entity(&mut self, headers: &Headers, body: &str, depth: usize) -> Result<Entity> {
-        if depth >= self.limits.max_depth {
-            return Err(Error::LimitExceeded {
-                what: "nesting depth",
-                limit: self.limits.max_depth,
-            });
-        }
         self.parts += 1;
         if self.parts > self.limits.max_parts {
             return Err(Error::LimitExceeded {
@@ -194,6 +206,18 @@ impl Parser<'_> {
             Some(value) => parse_media_type(value)?,
             None => MediaType::text_plain(),
         };
+
+        // The limit counts containers, not entities, and the top-level entity is depth
+        // 0: `depth > max_depth` (not `>=`) is what keeps `max_depth = 0` from
+        // rejecting every message, including the non-multipart ones it never could
+        // protect. Only a `multipart` can recurse, so checking it here bounds the
+        // recursion just as tightly as checking every entity did.
+        if media.kind == "multipart" && depth > self.limits.max_depth {
+            return Err(Error::LimitExceeded {
+                what: "nesting depth",
+                limit: self.limits.max_depth,
+            });
+        }
 
         let disposition = headers.get("Content-Disposition").map(parse_parameterized);
         let filename = disposition

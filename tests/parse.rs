@@ -602,6 +602,79 @@ fn depth_bomb_hits_the_limit() {
 }
 
 #[test]
+fn depth_zero_still_parses_messages_without_nested_multipart() {
+    // The audit finding this pins: `max_depth = 0` used to reject *every* message,
+    // because the check compared the entity depth before looking at the media type.
+    let mut limits = Limits::default();
+    limits.max_depth = 0;
+
+    let flat = with_from("Content-Type: text/plain\r\n\r\nhi");
+    assert_eq!(
+        parse_with_limits(&flat, &limits)
+            .expect("a flat body is not nested")
+            .body,
+        "hi"
+    );
+
+    let one_container = with_from(concat!(
+        "Content-Type: multipart/mixed; boundary=b\r\n\r\n",
+        "--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n--b--\r\n",
+    ));
+    assert_eq!(
+        parse_with_limits(&one_container, &limits)
+            .expect("one container is depth 0")
+            .body,
+        "hi"
+    );
+}
+
+#[test]
+fn depth_limit_is_the_container_depth_not_the_entity_depth() {
+    // `containers` nested `multipart/mixed` entities around one text/plain leaf.
+    fn chain(containers: usize) -> String {
+        let mut raw = String::new();
+        for level in 0..containers {
+            write!(
+                raw,
+                "Content-Type: multipart/mixed; boundary=b{level}\r\n\r\n--b{level}\r\n"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        raw.push_str("Content-Type: text/plain\r\n\r\nleaf\r\n");
+        for level in (0..containers).rev() {
+            write!(raw, "--b{level}--\r\n").expect("writing to a String cannot fail");
+        }
+        raw
+    }
+
+    for max_depth in 0..=4usize {
+        let mut limits = Limits::default();
+        limits.max_depth = max_depth;
+
+        // Containers 0..=max_depth are inside the limit; the leaf below the deepest
+        // one sits at depth max_depth + 1 and must still be accepted.
+        for containers in 0..=max_depth + 1 {
+            let raw = with_from(&chain(containers));
+            assert!(
+                parse_with_limits(&raw, &limits).is_ok(),
+                "{containers} containers with max_depth {max_depth} must parse"
+            );
+        }
+
+        // One container further is the boundary pair: rejected, and the error reports
+        // the limit the caller configured.
+        let raw = with_from(&chain(max_depth + 2));
+        assert_eq!(
+            parse_with_limits(&raw, &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "nesting depth",
+                limit: max_depth,
+            }
+        );
+    }
+}
+
+#[test]
 fn part_count_bomb_hits_the_limit() {
     let mut raw =
         String::from("From: a@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n");

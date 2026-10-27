@@ -113,6 +113,11 @@ Defaults (see [`Limits`]): 32 levels of nesting, 1000 entities, 64 KiB of
 headers, 8 KiB per header line, 1000 header fields, 8 MiB per decoded body.
 `parse_with_limits()` takes tighter budgets.
 
+`max_depth` counts `multipart` containers, not entities: the top-level entity is
+depth 0, a leaf part is accepted at any depth a container already reached, and a
+body that is not multipart never meets the limit. `max_depth = 0` therefore still
+parses a flat message (plus a single container) and only refuses nesting.
+
 ## DKIM (`dkim` feature)
 
 ```toml
