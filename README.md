@@ -232,6 +232,15 @@ quoted-printable), `truncated.eml`, `headers.eml` (folded, duplicated, empty and
 8-bit unknown headers), `related.eml` (inline part with `Content-ID`),
 `dkim.eml` (RFC 8463 example). 171k executions in a 45-second run, no crashes.
 
+## Versioning
+
+`0.y.z`: a **minor** bump may break (Cargo's pre-1.0 rule), a **patch** bump
+never does. `Error` and the payload enums are `#[non_exhaustive]`, so new
+variants arrive without a breaking release. **MSRV: Rust 1.89**
+(`rust-version` in `Cargo.toml`); it can rise in a minor release and stays put
+within a patch line. Every release is recorded in
+[CHANGELOG.md](CHANGELOG.md), which states the full policy.
+
 ## License
 
 Apache-2.0 OR MIT.
