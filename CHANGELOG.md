@@ -36,6 +36,19 @@ manifest disagree.
 
 ## [Unreleased]
 
+### Security
+
+- **PEM key input is bounded at 64 KiB.** `SigningKey::from_pem` and
+  `VerifyingKey::from_public_key_pem` handed the caller's whole string to the
+  PEM/DER decoders, and an RSA key becomes a big-integer allocation proportional
+  to its size, so an oversized blob cost CPU and memory in proportion to whatever
+  was passed in. Both entry points now compare the byte length against
+  `MAX_PEM_BYTES` (64 KiB — the largest key anyone deploys, 16384-bit RSA, is
+  about 7 KiB in PEM form) before any decode and return
+  `Error::LimitExceeded`. Pinned by
+  `pem_input_is_bounded_before_any_decoder_runs`: exactly 64 KiB still parses,
+  64 KiB + 1 is refused, and the error carries no key material.
+
 ### Fixed
 
 - **DKIM body canonicalization no longer allocates per line.** `canonicalize_body`

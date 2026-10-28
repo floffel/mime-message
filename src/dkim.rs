@@ -60,6 +60,31 @@ const MIN_RSA_BITS: usize = 1024;
 /// Longest line a folded `DKIM-Signature` may occupy.
 const MAX_LINE: usize = 78;
 
+/// Upper bound for a PEM key blob, in bytes.
+///
+/// The largest RSA key anyone deploys is 16384 bits (RFC 8301 sets only a floor
+/// of 1024), and its PKCS#1 PEM is about 7 KiB; an Ed25519 PKCS#8 block is 119
+/// bytes. 64 KiB is an order of magnitude above the biggest real key, so the
+/// bound rejects only input that cannot be a key, while keeping the PEM decode,
+/// the DER parse and the big-integer allocation behind them proportional to a
+/// constant instead of to whatever the caller passes in.
+const MAX_PEM_BYTES: usize = 64 * 1024;
+
+/// Rejects a PEM blob too large to be a key, before any decoder sees it.
+///
+/// The comparison is on the raw byte length and runs first, so an oversized
+/// input costs one length check rather than a scan, a base64 decode and a
+/// big-integer allocation.
+fn ensure_pem_size(pem: &str) -> Result<()> {
+    if pem.len() > MAX_PEM_BYTES {
+        return Err(Error::LimitExceeded {
+            what: "PEM key size in bytes",
+            limit: MAX_PEM_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// The signature algorithm named in the `a=` tag.
 ///
 /// ```
@@ -257,7 +282,12 @@ impl SigningKey {
     ///
     /// [`Error::InvalidKey`] for anything that is not an unencrypted RSA or
     /// Ed25519 private key, and for RSA keys below 1024 bits.
+    ///
+    /// [`Error::LimitExceeded`] when the input is longer than 64 KiB: no
+    /// deployed key comes close, and the bound keeps the PEM decode, the DER
+    /// parse and the big-integer allocation behind it proportional to a constant.
     pub fn from_pem(pem: &str) -> Result<Self> {
+        ensure_pem_size(pem)?;
         let label = pem_label(pem)
             .ok_or_else(|| Error::InvalidKey("not a PEM block (no BEGIN line)".to_string()))?;
         match label.as_str() {
@@ -515,7 +545,10 @@ impl VerifyingKey {
     /// # Errors
     ///
     /// [`Error::InvalidKey`] when the PEM is not a readable RSA public key.
+    ///
+    /// [`Error::LimitExceeded`] when the input is longer than 64 KiB.
     pub fn from_public_key_pem(pem: &str) -> Result<Self> {
+        ensure_pem_size(pem)?;
         let key = RsaPublicKey::from_public_key_pem(pem)
             .map_err(|error| Error::InvalidKey(format!("RSA public key: {error}")))?;
         let bits = key.size() * 8;
