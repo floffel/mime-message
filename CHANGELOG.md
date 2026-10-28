@@ -36,7 +36,19 @@ manifest disagree.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **DKIM body canonicalization no longer allocates per line.** `canonicalize_body`
+  built a `Vec` of line slices and a second `Vec` per line before joining them,
+  so a newline-dense body could amplify each input byte into tens of bytes of
+  allocation (a body near the parser's 8 MiB limit could reach hundreds of
+  MiB). It now makes two linear passes into one output buffer: the first finds the
+  end of the last non-empty line (the trailing empties RFC 6376 §3.4.4 drops),
+  the second writes the canonical lines straight into `out`, and `l=` stops the
+  second pass early because it only keeps a prefix. Output stays bounded by
+  `2 x input + 2`. Pinned by `a_line_per_byte_body_does_not_expand` (1 MiB of bare
+  newlines, 256 Ki one-byte lines) plus proptests for the CRLF-only shape, the
+  size bound, idempotence and `l=` prefix behaviour.
 
 ## [0.3.4] - 2026-10-27
 

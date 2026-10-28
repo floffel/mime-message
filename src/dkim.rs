@@ -1172,27 +1172,46 @@ fn canonicalize_header(field: &Field, canonicalization: Canonicalization) -> Vec
 }
 
 /// Canonicalizes a body, optionally truncated to `l=` bytes.
+///
+/// Two linear passes into one output buffer, no per-line `Vec` and no per-line
+/// copy: a body that is one newline per byte is valid input (8 MiB of `\n` is
+/// still under the parser's body limit), so the work has to stay proportional
+/// to the input instead of one allocation per line. Pass one finds where the
+/// last non-empty line ends - everything after it is a trailing empty line,
+/// dropped per RFC 6376 §3.4.4 - and pass two writes the canonical form of the
+/// lines before that straight into `out`.
+///
+/// The output stays proportional to the input: every retained line contributes
+/// its own bytes plus one CRLF, and a line only exists because the input carries
+/// at least one terminator byte for it.
 fn canonicalize_body(
     body: &[u8],
     canonicalization: Canonicalization,
     length: Option<usize>,
 ) -> Vec<u8> {
-    let mut lines: Vec<&[u8]> = Vec::new();
+    let mut content_end = 0usize;
     let mut offset = 0usize;
     while offset < body.len() {
         let (end, next) = line_end_at(body, offset);
-        lines.push(&body[offset..end]);
+        if !line_is_empty(&body[offset..end], canonicalization) {
+            content_end = next;
+        }
         offset = next;
     }
 
-    let mut canonical: Vec<Vec<u8>> = Vec::with_capacity(lines.len());
-    for line in lines {
+    // `l=` only ever keeps a prefix, so `content_end` bounds both the untruncated
+    // length and, with `length`, the wanted one.
+    let capacity = length.map_or(content_end, |length| content_end.min(length));
+    let mut out = Vec::with_capacity(capacity);
+
+    let mut offset = 0usize;
+    while offset < content_end {
+        let (end, next) = line_end_at(body, offset);
         match canonicalization {
-            Canonicalization::Simple => canonical.push(line.to_vec()),
+            Canonicalization::Simple => out.extend_from_slice(&body[offset..end]),
             Canonicalization::Relaxed => {
-                let mut out = Vec::with_capacity(line.len());
                 let mut pending_space = false;
-                for byte in line {
+                for &byte in &body[offset..end] {
                     match byte {
                         b' ' | b'\t' => pending_space = true,
                         _ => {
@@ -1200,30 +1219,31 @@ fn canonicalize_body(
                                 out.push(b' ');
                             }
                             pending_space = false;
-                            out.push(*byte);
+                            out.push(byte);
                         }
                     }
                 }
-                canonical.push(out);
             }
         }
-    }
-
-    while canonical.last().is_some_and(Vec::is_empty) {
-        canonical.pop();
-    }
-
-    let mut out = Vec::new();
-    for line in canonical {
-        out.extend_from_slice(&line);
         out.extend_from_slice(b"\r\n");
+        if length.is_some_and(|length| out.len() >= length) {
+            break;
+        }
+        offset = next;
     }
     if let Some(length) = length {
-        if length < out.len() {
-            out.truncate(length);
-        }
+        out.truncate(length);
     }
     out
+}
+
+/// Whether a line carries nothing worth signing: empty under `simple`, and
+/// whitespace-only under `relaxed`, which collapses such a line to nothing.
+fn line_is_empty(line: &[u8], canonicalization: Canonicalization) -> bool {
+    match canonicalization {
+        Canonicalization::Simple => line.is_empty(),
+        Canonicalization::Relaxed => line.iter().all(|byte| matches!(byte, b' ' | b'\t')),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,6 +1431,142 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_line_per_byte_body_does_not_expand() {
+        // One newline per byte is valid input and sits under the parser's body
+        // limit; every line is empty, so every line is dropped and the output is
+        // empty. This is the shape that used to cost one Vec per line.
+        let newlines = "\n".repeat(1024 * 1024);
+        assert_eq!(
+            canonicalize_body(newlines.as_bytes(), Canonicalization::Relaxed, None),
+            b""
+        );
+        assert_eq!(
+            canonicalize_body(newlines.as_bytes(), Canonicalization::Simple, None),
+            b""
+        );
+
+        // One byte of content per line: the output is the content plus the CRLF
+        // each line gains, and nothing per line beyond that.
+        let lines = "a\n".repeat(256 * 1024);
+        let canonical = canonicalize_body(lines.as_bytes(), Canonicalization::Simple, None);
+        assert_eq!(canonical.len(), 3 * 256 * 1024);
+        assert!(canonical.ends_with(b"\r\n"));
+    }
+
+    #[test]
+    fn only_trailing_empty_lines_are_dropped() {
+        assert_eq!(
+            canonicalize_body(
+                b"  \r\n\t\r\na\r\n \t\r\n\r\n",
+                Canonicalization::Relaxed,
+                None
+            ),
+            b"\r\n\r\na\r\n"
+        );
+        assert_eq!(
+            canonicalize_body(b"\r\n\r\na\r\n\r\n", Canonicalization::Simple, None),
+            b"\r\n\r\na\r\n"
+        );
+        assert_eq!(
+            canonicalize_body(b"   ", Canonicalization::Relaxed, None),
+            b""
+        );
+    }
+
+    #[test]
+    fn body_length_keeps_a_prefix_of_a_line_dense_body() {
+        let lines = "a\n".repeat(64 * 1024);
+        let full = canonicalize_body(lines.as_bytes(), Canonicalization::Relaxed, None);
+        for length in [0usize, 1, 3, 17, 1024, full.len() - 1] {
+            let truncated =
+                canonicalize_body(lines.as_bytes(), Canonicalization::Relaxed, Some(length));
+            assert_eq!(truncated, full[..length]);
+        }
+    }
+
+    mod canonicalization_properties {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Newlines and whitespace dominate so the generator hits the line-dense
+        /// and trailing-empty-line shapes instead of mostly plain text.
+        fn body_strategy() -> impl Strategy<Value = Vec<u8>> {
+            prop::collection::vec(
+                prop_oneof![
+                    8 => Just(b'a'),
+                    3 => Just(b' '),
+                    2 => Just(b'\t'),
+                    3 => Just(b'\r'),
+                    3 => Just(b'\n'),
+                    1 => Just(0u8),
+                ],
+                0..200,
+            )
+        }
+
+        proptest! {
+            #[test]
+            fn output_is_crlf_only_and_proportional(body in body_strategy(), simple in any::<bool>()) {
+                let canonical = if simple {
+                    Canonicalization::Simple
+                } else {
+                    Canonicalization::Relaxed
+                };
+                let out = canonicalize_body(&body, canonical, None);
+                // Two bytes per retained line, and a line needs a terminator byte
+                // in the input, so the output cannot outgrow the input by more
+                // than the CRLF that turns a bare LF/CR into a proper terminator.
+                prop_assert!(
+                    out.len() <= 2 * body.len() + 2,
+                    "canonical {} bytes from {} input bytes",
+                    out.len(),
+                    body.len()
+                );
+                prop_assert!(out.is_empty() || out.ends_with(b"\r\n"));
+                for (index, byte) in out.iter().enumerate() {
+                    if *byte == b'\r' {
+                        prop_assert_eq!(out.get(index + 1), Some(&b'\n'));
+                    } else if *byte == b'\n' {
+                        prop_assert_eq!(index.checked_sub(1).and_then(|i| out.get(i)), Some(&b'\r'));
+                    }
+                }
+            }
+
+            #[test]
+            fn canonicalization_is_idempotent(body in body_strategy(), simple in any::<bool>()) {
+                let canonical = if simple {
+                    Canonicalization::Simple
+                } else {
+                    Canonicalization::Relaxed
+                };
+                let once = canonicalize_body(&body, canonical, None);
+                prop_assert_eq!(canonicalize_body(&once, canonical, None), once);
+            }
+
+            #[test]
+            fn truncation_is_a_prefix_of_the_full_output(
+                body in body_strategy(),
+                simple in any::<bool>(),
+                length in 0usize..64
+            ) {
+                let canonical = if simple {
+                    Canonicalization::Simple
+                } else {
+                    Canonicalization::Relaxed
+                };
+                let full = canonicalize_body(&body, canonical, None);
+                if length <= full.len() {
+                    prop_assert_eq!(
+                        canonicalize_body(&body, canonical, Some(length)),
+                        full[..length].to_vec()
+                    );
+                } else {
+                    prop_assert_eq!(canonicalize_body(&body, canonical, Some(length)), full);
+                }
+            }
+        }
+    }
     #[test]
     fn strip_b_value_handles_all_layouts() {
         assert_eq!(
