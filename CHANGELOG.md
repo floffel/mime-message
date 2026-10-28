@@ -38,6 +38,20 @@ manifest disagree.
 
 ### Security
 
+- **The part budget is enforced while a `multipart` body is split, not after it.**
+  `split_multipart` returned every part it found and `parse_entity` then built
+  `Vec::with_capacity(raw_parts.len())` before the `max_parts` check could run, so a
+  delimiter-dense body allocated one `Entity` slot per delimiter: a body just under the
+  8 MiB body limit with 5-byte `--b\r\n` delimiters produced ~1.6 M slots (hundreds of
+  MiB) for a budget of 1000 parts. The split now takes the remaining allowance as an
+  argument and returns `Error::LimitExceeded` for `part count` on the first delimiter
+  past it, before the part is stored, which also bounds the preallocation by
+  `max_parts`. The allowance stays global across nested containers. Pinned by
+  `part_limit_is_enforced_while_splitting_not_after` (200 000 parts, refused), the
+  boundary pair `part_limit_pair_is_the_container_plus_its_children`,
+  `part_limit_is_shared_across_nested_containers`, the split-level unit test and the
+  proptest `part_limit_bounds_children`.
+
 - **PEM key input is bounded at 64 KiB.** `SigningKey::from_pem` and
   `VerifyingKey::from_public_key_pem` handed the caller's whole string to the
   PEM/DER decoders, and an RSA key becomes a big-integer allocation proportional
