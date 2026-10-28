@@ -69,6 +69,32 @@ pub struct Limits {
     /// while refusing nesting.
     pub max_depth: usize,
     /// Maximum number of MIME entities, the top-level one included.
+    ///
+    /// A `multipart` container is one entity and each of its parts is another, so a
+    /// budget of 3 accepts a container with two children and refuses a third. The
+    /// budget is spent across the whole tree, not per container, and it is enforced
+    /// while a body is split — a delimiter-dense body fails before its parts exist.
+    ///
+    /// ```
+    /// use mime_message::{parse_with_limits, Limits};
+    ///
+    /// let mut limits = Limits::default();
+    /// limits.max_parts = 3;
+    ///
+    /// let two = concat!(
+    ///     "From: a@example.com\r\n",
+    ///     "Content-Type: multipart/mixed; boundary=b\r\n\r\n",
+    ///     "--b\r\n\r\none\r\n--b\r\n\r\ntwo\r\n--b--\r\n",
+    /// );
+    /// assert!(parse_with_limits(two, &limits).is_ok());
+    ///
+    /// let three = concat!(
+    ///     "From: a@example.com\r\n",
+    ///     "Content-Type: multipart/mixed; boundary=b\r\n\r\n",
+    ///     "--b\r\n\r\none\r\n--b\r\n\r\ntwo\r\n--b\r\n\r\nthree\r\n--b--\r\n",
+    /// );
+    /// assert!(parse_with_limits(three, &limits).is_err());
+    /// ```
     pub max_parts: usize,
     /// Maximum total size of a header block, in bytes.
     pub max_header_bytes: usize,
@@ -242,7 +268,15 @@ impl Parser<'_> {
                 .ok_or(Error::MissingBoundary)?
                 .to_string();
             let text = self.decoded_text(body, encoding)?;
-            let raw_parts = split_multipart(&text, &boundary)?;
+            // The part budget goes into the split, not onto its result: a
+            // delimiter-dense body has to fail while it is scanned, before a `Vec`
+            // slot per delimiter exists. That is also what bounds the
+            // `with_capacity` below by `max_parts` instead of by the input size.
+            let budget = PartBudget {
+                remaining: self.limits.max_parts.saturating_sub(self.parts),
+                limit: self.limits.max_parts,
+            };
+            let raw_parts = split_multipart(&text, &boundary, budget)?;
             let mut children = Vec::with_capacity(raw_parts.len());
             for part in raw_parts {
                 let (part_head, part_body) = split_head(part);
@@ -1004,7 +1038,27 @@ impl Encoding {
 // ---------------------------------------------------------------------------
 
 /// Splits a multipart body into part slices (headers + body, delimiter removed).
-fn split_multipart<'a>(body: &'a str, boundary: &str) -> Result<Vec<&'a str>> {
+/// How many more MIME entities the current parse may create.
+///
+/// `remaining` bounds the work: the split refuses to collect a part past it, so the
+/// returned vector never grows beyond the budget however delimiter-dense the body is.
+/// `limit` is the caller's configured [`Limits::max_parts`], carried separately so the
+/// error names the number the caller set and not the leftover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PartBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+/// Splits a `multipart` body into its parts, collecting at most `budget.remaining`
+/// of them.
+///
+/// # Errors
+///
+/// [`Error::UnterminatedMultipart`] when the closing delimiter is missing, and
+/// [`Error::LimitExceeded`] for `part count` as soon as one more delimiter would
+/// start a part beyond the budget - the check runs before the part is stored.
+fn split_multipart<'a>(body: &'a str, boundary: &str, budget: PartBudget) -> Result<Vec<&'a str>> {
     let delimiter = format!("--{boundary}");
     let closing = format!("{delimiter}--");
     let mut parts = Vec::new();
@@ -1025,6 +1079,12 @@ fn split_multipart<'a>(body: &'a str, boundary: &str) -> Result<Vec<&'a str>> {
             if trimmed == closing {
                 closed = true;
                 break;
+            }
+            if parts.len() >= budget.remaining {
+                return Err(Error::LimitExceeded {
+                    what: "part count",
+                    limit: budget.limit,
+                });
             }
             current = Some(line_end);
         }
@@ -1206,17 +1266,67 @@ mod tests {
     #[test]
     fn split_multipart_ignores_preamble_and_epilogue() {
         let body = "preamble\r\n--b\r\nX: 1\r\n\r\nhello\r\n--b--\r\nepilogue";
-        let parts = split_multipart(body, "b").unwrap();
+        let parts = split_multipart(body, "b", generous()).unwrap();
         assert_eq!(parts, vec!["X: 1\r\n\r\nhello"]);
     }
 
     #[test]
     fn truncated_multipart_is_an_error() {
         assert_eq!(
-            split_multipart("--b\r\n\r\nhello\r\n", "b"),
+            split_multipart("--b\r\n\r\nhello\r\n", "b", generous()),
             Err(Error::UnterminatedMultipart)
         );
-        assert_eq!(split_multipart("", "b"), Err(Error::UnterminatedMultipart));
+        assert_eq!(
+            split_multipart("", "b", generous()),
+            Err(Error::UnterminatedMultipart)
+        );
+    }
+
+    /// A budget that never gets in the way of the splitting tests.
+    fn generous() -> PartBudget {
+        PartBudget {
+            remaining: 8,
+            limit: 8,
+        }
+    }
+
+    fn budget(remaining: usize) -> PartBudget {
+        PartBudget {
+            remaining,
+            limit: 1000,
+        }
+    }
+
+    #[test]
+    fn split_multipart_enforces_its_budget_before_collecting() {
+        let two = "--b\r\n\r\none\r\n--b\r\n\r\ntwo\r\n--b--\r\n";
+
+        // The accepted side of the boundary, then the exact error on the other side.
+        assert_eq!(
+            split_multipart(two, "b", budget(2)).unwrap(),
+            vec!["\r\none", "\r\ntwo"]
+        );
+        for remaining in [0, 1] {
+            assert_eq!(
+                split_multipart(two, "b", budget(remaining)),
+                Err(Error::LimitExceeded {
+                    what: "part count",
+                    limit: 1000,
+                }),
+                "a budget of {remaining} must refuse the part past it"
+            );
+        }
+
+        // A delimiter-dense body fails on the first delimiter past the budget, so the
+        // whole input never becomes a vector of parts.
+        let dense = "--b\r\n\r\n".repeat(50_000) + "--b--\r\n";
+        assert_eq!(
+            split_multipart(&dense, "b", budget(1000)),
+            Err(Error::LimitExceeded {
+                what: "part count",
+                limit: 1000,
+            })
+        );
     }
 
     #[test]

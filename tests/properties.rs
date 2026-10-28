@@ -394,6 +394,51 @@ proptest! {
             }
         }
     }
+    /// The part budget is spent entity by entity: a multipart with `children` parts
+    /// parses exactly when the container plus its children fit into `max_parts`, and a
+    /// failure names the configured limit instead of the leftover budget.
+    #[test]
+    fn part_limit_bounds_children(children in 0usize..6, max_parts in 1usize..8) {
+        let mut raw = String::from(
+            "From: a@example.com\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n",
+        );
+        for index in 0..children {
+            write!(
+                raw,
+                "--b\r\nContent-Type: text/plain\r\n\r\npart {index}\r\n"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        raw.push_str("--b--\r\n");
+
+        let mut limits = Limits::default();
+        limits.max_parts = max_parts;
+
+        match parse_with_limits(&raw, &limits) {
+            Ok(_) => prop_assert!(
+                children < max_parts,
+                "{} children parsed with max_parts {}",
+                children,
+                max_parts
+            ),
+            Err(error) => {
+                prop_assert!(
+                    children >= max_parts,
+                    "{} children rejected with max_parts {}: {:?}",
+                    children,
+                    max_parts,
+                    error
+                );
+                prop_assert_eq!(
+                    error,
+                    mime_message::Error::LimitExceeded {
+                        what: "part count",
+                        limit: max_parts,
+                    }
+                );
+            }
+        }
+    }
 }
 
 /// DKIM properties: the body hash must follow RFC 6376 for *any* body, and a

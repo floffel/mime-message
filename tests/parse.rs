@@ -692,6 +692,100 @@ fn part_count_bomb_hits_the_limit() {
 }
 
 #[test]
+fn part_limit_is_enforced_while_splitting_not_after() {
+    // The audit finding this pins: `children` used to be preallocated with one slot per
+    // delimiter found in the body, and the `max_parts` check only ran once the entities
+    // were built. A delimiter-dense body therefore allocated millions of slots before
+    // the configured budget rejected it. The split now refuses the part past the budget.
+    const CHILDREN: usize = 200_000;
+    let raw = with_from(&format!(
+        "Content-Type: multipart/mixed; boundary=b\r\n\r\n{}{}",
+        "--b\r\n\r\n".repeat(CHILDREN),
+        "--b--\r\n"
+    ));
+    assert_eq!(
+        parse(&raw).unwrap_err(),
+        Error::LimitExceeded {
+            what: "part count",
+            limit: Limits::default().max_parts,
+        }
+    );
+}
+
+#[test]
+fn part_limit_pair_is_the_container_plus_its_children() {
+    fn multipart(children: usize) -> String {
+        let mut raw = String::from("Content-Type: multipart/mixed; boundary=b\r\n\r\n");
+        for index in 0..children {
+            write!(
+                raw,
+                "--b\r\nContent-Type: text/plain\r\n\r\npart {index}\r\n"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        raw.push_str("--b--\r\n");
+        with_from(&raw)
+    }
+
+    for max_parts in 2..=6usize {
+        let mut limits = Limits::default();
+        limits.max_parts = max_parts;
+
+        // The container counts as one entity, so `max_parts - 1` children fit.
+        let raw = multipart(max_parts - 1);
+        assert!(
+            parse_with_limits(&raw, &limits).is_ok(),
+            "{max_parts} parts must accept {} children",
+            max_parts - 1
+        );
+
+        // One child further is the other side of the boundary, and the error reports
+        // the configured limit rather than the leftover budget.
+        let raw = multipart(max_parts);
+        assert_eq!(
+            parse_with_limits(&raw, &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "part count",
+                limit: max_parts,
+            },
+            "{max_parts} parts must refuse {max_parts} children"
+        );
+    }
+}
+
+#[test]
+fn part_limit_is_shared_across_nested_containers() {
+    // The budget is global, not per container: children of a nested multipart spend
+    // the same allowance as their parents, so a wide tree cannot multiply the limit.
+    let raw = with_from(concat!(
+        "Content-Type: multipart/mixed; boundary=outer\r\n\r\n",
+        "--outer\r\nContent-Type: multipart/mixed; boundary=inner\r\n\r\n",
+        "--inner\r\nContent-Type: text/plain\r\n\r\na\r\n",
+        "--inner\r\nContent-Type: text/plain\r\n\r\nb\r\n",
+        "--inner--\r\n--outer--\r\n",
+    ));
+
+    let mut limits = Limits::default();
+    limits.max_parts = 4;
+    assert_eq!(
+        parse_with_limits(&raw, &limits)
+            .expect("two containers plus two leaves are four entities")
+            .attachments
+            .len(),
+        1
+    );
+
+    limits.max_parts = 3;
+    assert_eq!(
+        parse_with_limits(&raw, &limits).unwrap_err(),
+        Error::LimitExceeded {
+            what: "part count",
+            limit: 3,
+        }
+    );
+}
+
+#[test]
 fn body_size_bomb_hits_the_limit() {
     let mut limits = Limits::default();
     limits.max_body_bytes = 32;
