@@ -648,3 +648,44 @@ fn a_broken_signature_does_not_hide_a_good_one() {
     let verified = dkim::verify(&broken, &key.verifying_key()).expect("good signature");
     assert_eq!(verified.selector, "good");
 }
+
+/// Both PEM entry points bound their input at 64 KiB (`MAX_PEM_BYTES` in
+/// `src/dkim.rs`) *before* any PEM, base64 or big-integer work starts. The
+/// boundary is `>`, not `>=`: a real key padded to exactly the limit still
+/// parses, one byte more is refused with `LimitExceeded`, and a megabyte of
+/// padding costs a length check instead of a decode. Padding goes *before* the
+/// `BEGIN` line because the PEM parsers reject trailing bytes but accept a
+/// preamble, which is also why the byte count is the right thing to bound.
+#[test]
+fn pem_input_is_bounded_before_any_decoder_runs() {
+    const MAX: usize = 64 * 1024;
+
+    let rsa = fixture("rsa-private.pem");
+    let pad = MAX - rsa.len() - 1;
+    let preamble = format!("#{}\n", "p".repeat(pad - 1));
+    let at_limit = format!("{preamble}{rsa}");
+    assert_eq!(at_limit.len(), MAX, "the probe has to land on the bound");
+    assert!(
+        SigningKey::from_pem(&at_limit).is_ok(),
+        "a key padded to exactly the limit must still parse"
+    );
+
+    let over = format!("#{at_limit}");
+    let error = SigningKey::from_pem(&over).unwrap_err();
+    assert_eq!(
+        error,
+        Error::LimitExceeded {
+            what: "PEM key size in bytes",
+            limit: MAX,
+        }
+    );
+    // The error names the bound, never key material.
+    assert!(!format!("{error:?}").contains("-----BEGIN"));
+
+    // The public-key entry point carries the same bound.
+    let oversized = format!("{}{}", fixture("rsa-public.pem"), "A".repeat(1024 * 1024));
+    assert!(matches!(
+        VerifyingKey::from_public_key_pem(&oversized),
+        Err(Error::LimitExceeded { limit, .. }) if limit == MAX
+    ));
+}
