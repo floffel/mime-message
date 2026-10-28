@@ -17,6 +17,22 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A version bump without a CHANGELOG section is how release notes go missing.
+      - name: the manifest version has a CHANGELOG section
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          echo "manifest version: ${version}"
+          test -n "${version}"
+          grep -qF "## [${version}]" CHANGELOG.md || {
+            echo "::error file=CHANGELOG.md::no section '## [${version}]' for the version in Cargo.toml" >&2
+            exit 1
+          }
+
   coverage:
     runs-on: ubuntu-latest
     steps:
