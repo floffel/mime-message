@@ -13,6 +13,12 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
       - run: cargo test --no-default-features
+      # The example is the documentation that runs: build it with every
+      # feature and execute it, so it cannot drift from the API.
+      - name: Examples build and run
+        run: |
+          cargo build --examples --all-features
+          cargo run --quiet --example compose_and_parse --all-features
       - run: cargo doc --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
