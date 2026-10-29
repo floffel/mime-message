@@ -52,6 +52,27 @@ stored bytes, so a parsed message can be forwarded without losing them.
 `Bcc:` is parsed into `Message::bcc` and **never rendered**: the caller puts
 those addresses into the SMTP envelope, which is what makes a blind copy blind.
 
+### Line limits and transfer encoding
+
+Three numbers govern what the next hop accepts, and each one is enforced rather
+than hoped for:
+
+- **78 characters** per header line is the RFC 5322 §2.1.1 *should*. Every header
+  — including the headers of the MIME parts — is folded at a space.
+- **998 octets** per line is the *must* in the same section. A body whose longest
+  line is longer is sent as `quoted-printable`, where soft line breaks keep every
+  line within 76 characters (RFC 2045 §6.7) and the decoded body is exactly the
+  one the caller supplied.
+- **75 characters** per encoded-word is RFC 2047 §2. A long non-ASCII subject is
+  split into several `=?UTF-8?B?…?=` words; each one decodes on its own, and the
+  concatenation is the original subject.
+
+`Content-Transfer-Encoding: 8bit` is used for an ASCII body within the limit and
+otherwise never: `8bit` is only legal when the next hop speaks 8BITMIME (RFC 6152)
+or SMTPUTF8 (RFC 6532), while quoted-printable needs nothing from it. Any
+non-ASCII byte or any overlong line therefore switches that text part to
+quoted-printable. Attachments are always base64, wrapped at 76 characters.
+
 ## Parsing
 
 `parse()` returns a [`Message`] for the whole RFC 5322 + MIME surface this crate
@@ -226,8 +247,12 @@ Documented rather than silently missing:
   tamper detection.
 - Doctests on every public item; `#![deny(missing_docs)]`,
   `#![forbid(unsafe_code)]`.
-- Line coverage: **98.0 %** (`cargo llvm-cov --all-features --summary-only`; the
-  `dkim` module itself 98.2 %). CI fails below 95 %.
+- Per-rule limit tests (`tests/rfc_limits.rs`), one test per number a receiver
+  relies on: the 78-character header line, the 998-octet body line with both
+  sides of the boundary, the 75-character encoded-word that still decodes on its
+  own, and quoted-printable lines within 76.
+- Line coverage: **97.2 %** (`cargo llvm-cov --all-features --summary-only`; the
+  `dkim` module itself 97.6 %). CI fails below 95 %.
 
 ### Fuzzing
 
