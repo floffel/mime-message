@@ -274,8 +274,13 @@ quoted-printable), `truncated.eml`, `headers.eml` (folded, duplicated, empty and
 ## Versioning
 
 `0.y.z`: a **minor** bump may break (Cargo's pre-1.0 rule), a **patch** bump
-never does. `Error` and the payload enums are `#[non_exhaustive]`, so new
-variants arrive without a breaking release. **MSRV: Rust 1.89**
+never does. The types that can grow are `#[non_exhaustive]`: `Error`,
+`Attachment`, `dkim::SignParams`, `dkim::SignatureHeader` (fields) and
+`dkim::Algorithm`, `dkim::Canonicalization` (variants), so new wire data arrives
+in a minor release and a `match` over them needs a `_` arm. `Mailbox` is complete
+by construction — a display name and an address — and stays buildable with a
+struct literal. `tests/public_surface.rs` fails CI when a new public type omits
+that decision, or when a public function loses its doctest. **MSRV: Rust 1.89**
 (`rust-version` in `Cargo.toml`); it can rise in a minor release and stays put
 within a patch line. Every release is recorded in
 [CHANGELOG.md](CHANGELOG.md), which states the full policy.

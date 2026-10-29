@@ -96,6 +96,12 @@ pub(crate) fn truncate(text: &str, max: usize) -> String {
 
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
 ///
+/// The struct is deliberately **not** `#[non_exhaustive]`: a mailbox is the
+/// complete RFC 5322 §3.4 shape — an optional display name and the address —
+/// so struct-literal construction is part of the API rather than a hazard.
+/// Parsed messages hand these out, and one built by hand can be passed to
+/// [`MessageBuilder::to`].
+///
 /// ```
 /// use mime_message::Mailbox;
 ///
@@ -155,6 +161,12 @@ impl Mailbox {
 
 /// One attachment with its raw bytes.
 ///
+/// The struct is `#[non_exhaustive]`: a part can grow per-part data (a content
+/// disposition other than `attachment`, `Content-*` headers of its own, an
+/// explicit transfer encoding) without that being a breaking release. Build one
+/// with [`Attachment::new`] and [`Attachment::with_content_id`]; the fields stay
+/// publicly readable.
+///
 /// ```rust
 /// use mime_message::Attachment;
 ///
@@ -162,6 +174,7 @@ impl Mailbox {
 /// assert_eq!(attachment.filename, "rechnung.pdf");
 /// assert!(attachment.content_id.is_none());
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attachment {
     /// File name shown by the client.

@@ -43,6 +43,22 @@ manifest disagree.
   line endings, the 78-byte header limit, the render→parse round trip and `cid:`
   rewriting, and prints the rendered headers.
 
+### Changed
+
+- **Breaking (the next release is `0.4.0`): the payload types are `#[non_exhaustive]`.**
+  `Attachment`, `dkim::SignParams` and `dkim::SignatureHeader` now say so explicitly, so a
+  field can be added (`Content-Disposition`, an `x=` expiry, a `q=` query method) without a
+  breaking release, and `dkim::Algorithm` / `dkim::Canonicalization` can gain a variant when
+  the wire brings one. Building one of those structs with a struct literal — something no
+  example or doc ever showed — stops compiling in a downstream crate; reading the public
+  fields and the `new()` / setter constructors is unaffected. `Mailbox` stays
+  literal-constructible on purpose: it is the complete RFC 5322 §3.4 shape, and the doc says
+  so. These decisions are not prose any more: `tests/public_surface.rs` re-derives them from
+  `src/` and fails when a public type omits the attribute without an exemption that names its
+  reason, and when a public function loses its doctest. Mutation-checked both ways: dropping
+  `#[non_exhaustive]` from `Attachment` fails the type gate, deleting one doc fence fails the
+  doctest gate.
+
 ### Security
 
 - **The part budget is enforced while a `multipart` body is split, not after it.**
