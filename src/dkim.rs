@@ -87,6 +87,11 @@ fn ensure_pem_size(pem: &str) -> Result<()> {
 
 /// The signature algorithm named in the `a=` tag.
 ///
+/// `#[non_exhaustive]`: the tag is parsed from the wire, and a sender may use an
+/// algorithm this release does not implement ([`Algorithm::parse`] returns
+/// `None` for it). Adding one is a minor release, not a breaking change, so match
+/// with a `_` arm.
+///
 /// ```
 /// use mime_message::dkim::Algorithm;
 ///
@@ -95,6 +100,7 @@ fn ensure_pem_size(pem: &str) -> Result<()> {
 /// assert_eq!(Algorithm::parse("ed25519-sha256"), Some(Algorithm::Ed25519Sha256));
 /// assert_eq!(Algorithm::parse("rsa-sha1"), None);
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Algorithm {
     /// RSA PKCS#1 v1.5 over SHA-256.
@@ -139,12 +145,16 @@ impl Algorithm {
 
 /// Header and body canonicalization (RFC 6376 §3.4).
 ///
+/// `#[non_exhaustive]` for the same reason as [`Algorithm`]: the `c=` tag comes
+/// from the wire, and a future RFC can add a mode.
+///
 /// ```
 /// use mime_message::dkim::Canonicalization;
 ///
 /// assert_eq!(Canonicalization::Relaxed.as_str(), "relaxed");
 /// assert_eq!(Canonicalization::parse("SIMPLE"), Some(Canonicalization::Simple));
 /// ```
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Canonicalization {
     /// Byte-for-byte, only normalising line endings.
@@ -620,6 +630,11 @@ impl VerifyingKey {
 ///
 /// The timestamp is caller supplied on purpose: this crate never reads the
 /// clock, so signing the same message twice produces the same bytes.
+///
+/// `#[non_exhaustive]`: DKIM tags this release does not fill in (`x=` expiry,
+/// `q=` query method) arrive on the struct through [`SignParams::new`] and its
+/// setters, so a new tag is a minor release. The fields stay publicly readable.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignParams {
     /// The signing domain (`d=`), for example `example.com`.
@@ -746,6 +761,12 @@ impl SignParams {
 /// assert_eq!(signature.signed_headers, ["from", "subject"]);
 /// # Ok::<(), mime_message::Error>(())
 /// ```
+///
+/// `#[non_exhaustive]`: a signature carries more tags than this release models
+/// (`q=` query method, `x=` expiry, `z=` copied headers), and decoding one into a
+/// struct literal is not a supported construction — use [`signatures`],
+/// [`sign`] or [`verify`]. The fields stay publicly readable.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureHeader {
     /// `d=` — the signing domain.
