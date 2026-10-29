@@ -69,8 +69,8 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
 
     if let Some(html) = message.html_body.as_ref() {
         if message.attachments.is_empty() {
-            write_text_section(&mut out, &boundary, "text/plain", &message.body);
-            write_text_section(&mut out, &boundary, "text/html", html);
+            write_text_section(&mut out, &boundary, "text/plain", &message.body)?;
+            write_text_section(&mut out, &boundary, "text/html", html)?;
         } else {
             // mixed(alternative(plain, html), attachments) or
             // related(alternative(plain, html), inline parts)
@@ -78,14 +78,17 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
             write_part_header(
                 &mut out,
                 &boundary,
-                &format!("Content-Type: multipart/alternative; boundary=\"{inner}\""),
-            );
-            write_text_section(&mut out, &inner, "text/plain", &message.body);
-            write_text_section(&mut out, &inner, "text/html", html);
+                &[(
+                    "Content-Type",
+                    format!("multipart/alternative; boundary=\"{inner}\""),
+                )],
+            )?;
+            write_text_section(&mut out, &inner, "text/plain", &message.body)?;
+            write_text_section(&mut out, &inner, "text/html", html)?;
             out.push_str(&format!("--{inner}--{CRLF}"));
         }
     } else {
-        write_text_section(&mut out, &boundary, "text/plain", &message.body);
+        write_text_section(&mut out, &boundary, "text/plain", &message.body)?;
     }
 
     for attachment in &message.attachments {
@@ -139,23 +142,51 @@ fn check_no_line_break(value: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_part_header(out: &mut String, boundary: &str, header: &str) {
+fn write_part_header(
+    out: &mut String,
+    boundary: &str,
+    headers: &[(&'static str, String)],
+) -> Result<()> {
     out.push_str(&format!("--{boundary}{CRLF}"));
-    out.push_str(header);
+    for (name, value) in headers {
+        push_part_header(out, name, value)?;
+    }
     out.push_str(CRLF);
-    out.push_str(CRLF);
+    Ok(())
 }
 
-fn write_text_section(out: &mut String, boundary: &str, content_type: &str, text: &str) {
+/// Writes one header line of a MIME part, folded like a top-level header.
+///
+/// A part header *is* a header: `Content-Type: multipart/alternative;
+/// boundary="…"` is 83 bytes unfolded, past the 78 a reader may rely on
+/// (RFC 5322 §2.1.1), so the folding rules are the same inside a part as at
+/// the top of the message.
+fn push_part_header(out: &mut String, name: &'static str, value: &str) -> Result<()> {
+    if has_forbidden_chars(value) {
+        return Err(Error::HeaderInjection(name));
+    }
+    out.push_str(&fold_header(name, value));
+    out.push_str(CRLF);
+    Ok(())
+}
+
+fn write_text_section(
+    out: &mut String,
+    boundary: &str,
+    content_type: &str,
+    text: &str,
+) -> Result<()> {
     write_part_header(
         out,
         boundary,
-        &format!(
-            "Content-Type: {content_type}; charset=utf-8{CRLF}Content-Transfer-Encoding: 8bit"
-        ),
-    );
+        &[
+            ("Content-Type", format!("{content_type}; charset=utf-8")),
+            ("Content-Transfer-Encoding", "8bit".to_string()),
+        ],
+    )?;
     out.push_str(&normalise_newlines(text));
     out.push_str(CRLF);
+    Ok(())
 }
 
 fn write_attachment(
@@ -163,9 +194,6 @@ fn write_attachment(
     boundary: &str,
     attachment: &crate::Attachment,
 ) -> Result<()> {
-    if attachment.content_type.contains('\r') || attachment.content_type.contains('\n') {
-        return Err(Error::HeaderInjection("Content-Type"));
-    }
     let content_id = attachment
         .content_id
         .as_deref()
@@ -177,16 +205,22 @@ fn write_attachment(
         "attachment"
     };
 
-    out.push_str(&format!("--{boundary}{CRLF}"));
-    out.push_str(&format!("Content-Type: {}\r\n", attachment.content_type));
-    out.push_str("Content-Transfer-Encoding: base64\r\n");
+    let mut headers: Vec<(&'static str, String)> = vec![
+        ("Content-Type", attachment.content_type.clone()),
+        ("Content-Transfer-Encoding", "base64".to_string()),
+    ];
     if let Some(id) = &content_id {
-        out.push_str(&format!("Content-ID: <{id}>\r\n"));
+        headers.push(("Content-ID", format!("<{id}>")));
     }
-    out.push_str(&format!(
-        "Content-Disposition: {disposition}; filename=\"{}\"\r\n\r\n",
-        sanitise_filename(&attachment.filename)
+    headers.push((
+        "Content-Disposition",
+        format!(
+            "{disposition}; filename=\"{}\"",
+            sanitise_filename(&attachment.filename)
+        ),
     ));
+    write_part_header(out, boundary, &headers)?;
+
     out.push_str(&base64_wrapped(&attachment.data));
     out.push_str(CRLF);
     Ok(())
