@@ -36,6 +36,13 @@ manifest disagree.
 
 ## [Unreleased]
 
+### Added
+
+- **`examples/compose_and_parse.rs`**, built and run in CI: composes an invoice mail
+  (text, HTML alternative, inline logo with `Content-ID`, PDF attachment), asserts CRLF
+  line endings, the 78-byte header limit, the render→parse round trip and `cid:`
+  rewriting, and prints the rendered headers.
+
 ### Security
 
 - **The part budget is enforced while a `multipart` body is split, not after it.**
@@ -64,6 +71,16 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+
+- **The headers of a MIME part are folded like top-level headers.** `write_part_header`
+  wrote `Content-Type: multipart/alternative; boundary="…"` and
+  `Content-Disposition: …; filename="…"` raw, so a message with an HTML alternative
+  carried an 83-byte header line, and a long filename another one — past the 78 bytes a
+  reader may rely on (RFC 5322 §2.1.1), while the README promised folding "below 78
+  characters". Part headers now go through the same `fold_header` and the same CR/LF
+  rejection as the top of the message. Pinned by
+  `no_header_line_exceeds_78_bytes_in_any_multipart_shape` over the plain, alternative,
+  mixed and related shapes; it fails on the previous code with exactly those two lines.
 
 - **DKIM body canonicalization no longer allocates per line.** `canonicalize_body`
   built a `Vec` of line slices and a second `Vec` per line before joining them,

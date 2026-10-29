@@ -229,3 +229,79 @@ fn every_rfc2047_word_decodes_on_its_own() {
         "Ihre Rechnung f\u{00fc}r die Wohnung in Ingolstadt und Umgebung"
     );
 }
+
+/// A line that is a header field or a folded continuation of one.
+fn is_header_line(line: &str) -> bool {
+    if line.starts_with(' ') || line.starts_with('\t') {
+        return true;
+    }
+    line.split_once(':').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+/// Every header line, in every multipart shape, stays under 78 bytes.
+///
+/// The boundary alone is 33 bytes, so `Content-Type: multipart/alternative;
+/// boundary="…"` is 83 characters unfolded. Top-level headers were folded from
+/// the start; the headers of the parts were written raw until this test existed.
+#[test]
+fn no_header_line_exceeds_78_bytes_in_any_multipart_shape() {
+    let alternative = Message::builder()
+        .from("a@example.com")
+        .unwrap()
+        .to("b@example.com")
+        .unwrap()
+        .subject("Grüße")
+        .body("text")
+        .html_body("<p>html</p>")
+        .build()
+        .unwrap();
+
+    let mut mixed = alternative.clone();
+    mixed.attachments.push(Attachment::new(
+        "rechnung-oktober-2026-mit-anhang.pdf",
+        "application/pdf",
+        b"%PDF-1.4".to_vec(),
+    ));
+
+    let mut related = alternative.clone();
+    related.attachments.push(
+        Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
+            .with_content_id("logo@example.com"),
+    );
+
+    for (shape, message) in [
+        ("plain", simple()),
+        ("alternative", alternative),
+        ("mixed", mixed.clone()),
+        ("related", related),
+    ] {
+        let text = String::from_utf8(message.render().unwrap()).unwrap();
+        let long: Vec<String> = text
+            .split("\r\n")
+            .filter(|line| is_header_line(line) && line.len() > 78)
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            long,
+            Vec::<String>::new(),
+            "{shape}: a header line is above 78 bytes"
+        );
+    }
+
+    // The nested `multipart/alternative` header is the one that needs folding;
+    // it must be folded at the parameter, not truncated or dropped.
+    let text = String::from_utf8(mixed.render().unwrap()).unwrap();
+    assert!(
+        text.contains("\r\n boundary=\"="),
+        "the nested Content-Type should be folded before its boundary parameter"
+    );
+    assert!(
+        text.contains("multipart/alternative"),
+        "no header was truncated"
+    );
+}

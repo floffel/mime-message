@@ -23,10 +23,24 @@ Deterministic: no clock, no randomness — pass `Date` and `Message-ID` if you
 need them, and a DKIM timestamp if you want one. Parsing is pure, `Send`/`Sync`-
 clean and safe to run from many threads at once.
 
+## Examples
+
+[`examples/compose_and_parse.rs`](examples/compose_and_parse.rs) composes an
+invoice mail — text plus an HTML alternative, an inline logo with a
+`Content-ID` and a PDF attachment — then parses the rendered bytes back and
+asserts the round trip:
+
+```
+cargo run --example compose_and_parse
+```
+
+CI builds and runs it, so the example cannot rot.
+
 ## Rendering
 
 Guarantees the tests pin down: CRLF line endings everywhere, header folding
-below 78 characters without losing whitespace, RFC 2047 encoding for non-ASCII
+below 78 characters without losing whitespace (the headers of the MIME parts
+included), RFC 2047 encoding for non-ASCII
 subjects and display names, base64 attachments, `multipart/alternative` when an
 HTML body is supplied, `multipart/related` when every attachment carries a
 `Content-ID`, and **rejection of CR/LF in headers** so a caller cannot be
