@@ -496,6 +496,12 @@ mod dkim_properties {
             .build()
             .expect("build")
     }
+    /// The body exactly as it goes on the wire: RFC 6376 hashes the transmitted
+    /// bytes, so a quoted-printable body is hashed in its encoded form.
+    fn transmitted_body(raw: &str) -> String {
+        let (_, body) = raw.split_once("\r\n\r\n").expect("header/body separator");
+        body.to_string()
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
@@ -508,8 +514,9 @@ mod dkim_properties {
                 .sign(&key, &SignParams::new("example.com", "sel"))
                 .expect("sign");
             let raw = String::from_utf8_lossy(&signed);
+            let transmitted = transmitted_body(&raw);
             let header = &dkim::signatures(&raw)?[0];
-            let expected = Sha256::digest(relaxed_body(&body));
+            let expected = Sha256::digest(relaxed_body(&transmitted));
             prop_assert_eq!(STANDARD.encode(expected), STANDARD.encode(&header.body_hash));
         }
 

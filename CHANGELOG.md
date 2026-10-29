@@ -72,6 +72,23 @@ manifest disagree.
 
 ### Fixed
 
+- **A text body is no longer allowed to break the 998-octet line limit, and non-ASCII
+  bodies go out as quoted-printable instead of raw `8bit`.** RFC 5322 §2.1.1 says a line
+  MUST be at most 998 characters, but the renderer copied the body into the message
+  verbatim: a 2000-character line left the crate as a 2000-octet line, which a strict
+  next hop refuses. The same path emitted a German body as raw UTF-8 under
+  `Content-Transfer-Encoding: 8bit`, which is only legal when the next hop speaks
+  8BITMIME (RFC 6152) or SMTPUTF8 (RFC 6532) — neither is something this crate can
+  assume. `encode_text_body` now picks the encoding per text part: `8bit` stays for
+  ASCII within the limit (the original bytes, untouched), everything else is
+  quoted-printable (`transfer::encode_quoted_printable`, new: RFC 2045 §6.7, 7-bit
+  clean, soft line breaks at 76 characters, trailing spaces and `=` escaped). Pinned
+  by `tests/rfc_limits.rs`: `body_lines_never_exceed_the_998_octet_must`, the boundary
+  pair `the_998_octet_boundary_is_inclusive` (998 stays `8bit`, 999 switches),
+  `a_non_ascii_body_goes_out_seven_bit`, `every_text_part_chooses_its_own_encoding`,
+  `the_encoder_escapes_what_the_wire_would_eat` and the proptest
+  `quoted_printable_round_trips_any_text`; the DKIM body-hash property test now hashes
+  the transmitted body, as RFC 6376 §3.4.4 requires.
 - **The headers of a MIME part are folded like top-level headers.** `write_part_header`
   wrote `Content-Type: multipart/alternative; boundary="…"` and
   `Content-Disposition: …; filename="…"` raw, so a message with an HTML alternative

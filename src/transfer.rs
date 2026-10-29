@@ -99,6 +99,91 @@ pub fn decode_quoted_printable(input: &str) -> Vec<u8> {
     out
 }
 
+/// Upper-case hex digits for `=XX` escapes.
+const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Longest line the encoder emits, in characters, a soft line break included
+/// (RFC 2045 §6.7 allows at most 76).
+pub const MAX_QUOTED_PRINTABLE_LINE: usize = 76;
+
+/// Encodes `input` as quoted-printable, the 7-bit-safe form of a body.
+///
+/// The inverse of [`decode_quoted_printable`], with the rules from RFC 2045
+/// §6.7: printable US-ASCII except `=` passes through unchanged, everything
+/// else becomes `=XX`, a space or tab that ends a line is escaped (a trailing
+/// space would be stripped by the next hop), and long lines are broken with a
+/// soft line break (`=` + CRLF) so that no line exceeds 76 characters. A line
+/// break in the input is a *hard* break and stays one; it is emitted as CRLF, so
+/// pass CRLF-normalised text when the output must match the input byte for byte.
+///
+/// ```
+/// use mime_message::transfer;
+///
+/// // Bytes outside US-ASCII become escapes, not raw 8-bit.
+/// assert_eq!(transfer::encode_quoted_printable("Grüße"), "Gr=C3=BC=C3=9Fe");
+/// assert_eq!(transfer::encode_quoted_printable("a=b"), "a=3Db");
+/// // A trailing space would be lost in transit, so it is escaped.
+/// assert_eq!(transfer::encode_quoted_printable("hallo \r\n"), "hallo=20\r\n");
+/// // Soft line breaks keep every line within 76 characters, and an encoded body
+/// // decodes back to exactly what went in.
+/// let input = "ä".repeat(100);
+/// let encoded = transfer::encode_quoted_printable(&input);
+/// assert!(encoded.split("\r\n").all(|line| line.len() <= 76));
+/// assert_eq!(transfer::decode_quoted_printable(&encoded), input.as_bytes());
+/// assert_eq!(transfer::encode_quoted_printable(""), "");
+/// ```
+#[must_use]
+pub fn encode_quoted_printable(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len() + bytes.len() / 3 + 8);
+    let mut column = 0usize;
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+
+        // A line break in the input is a hard break and stays one.
+        if byte == b'\r' || byte == b'\n' {
+            let width = if byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
+            index += width;
+            out.push_str("\r\n");
+            column = 0;
+            continue;
+        }
+
+        // A space or tab that ends the line is invisible in transit, so it is
+        // only ever emitted as an escape.
+        let trailing = matches!(byte, b' ' | b'\t')
+            && matches!(bytes.get(index + 1), None | Some(b'\r' | b'\n'));
+        let literal = !trailing
+            && (matches!(byte, b' ' | b'\t') || (33..=126).contains(&byte))
+            && byte != b'=';
+
+        // One literal byte or a three-character escape. One column is reserved
+        // for the '=' of a soft line break.
+        let width = if literal { 1 } else { 3 };
+        if column + width > MAX_QUOTED_PRINTABLE_LINE - 1 {
+            out.push_str("=\r\n");
+            column = 0;
+        }
+        if literal {
+            // Only ASCII bytes are literal, so this slice is a char boundary.
+            out.push_str(&input[index..=index]);
+        } else {
+            out.push('=');
+            out.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
+            out.push(HEX_DIGITS[usize::from(byte & 0x0F)] as char);
+        }
+        column += width;
+        index += 1;
+    }
+    out
+}
+
 fn hex_pair(high: u8, low: Option<&u8>) -> Option<u8> {
     let high = hex_digit(high)?;
     let low = hex_digit(*low?)?;

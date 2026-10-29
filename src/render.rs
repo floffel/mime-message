@@ -12,6 +12,9 @@ use crate::{cid, is_tchar, truncate, Mailbox, Message, MODELLED_HEADERS};
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
 
+/// Longest body line RFC 5322 §2.1.1 permits, CRLF excluded.
+const MAX_BODY_LINE: usize = 998;
+
 /// Renders `message` into RFC 5322 bytes.
 pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     let mut out = String::new();
@@ -37,9 +40,10 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     let has_html = message.html_body.is_some();
     if !has_html && message.attachments.is_empty() {
         push_header(&mut out, "Content-Type", "text/plain; charset=utf-8", false)?;
-        push_header(&mut out, "Content-Transfer-Encoding", "8bit", false)?;
+        let (encoding, body) = encode_text_body(&message.body);
+        push_header(&mut out, "Content-Transfer-Encoding", encoding, false)?;
         out.push_str(CRLF);
-        out.push_str(&normalise_newlines(&message.body));
+        out.push_str(&body);
         return Ok(out.into_bytes());
     }
 
@@ -176,17 +180,41 @@ fn write_text_section(
     content_type: &str,
     text: &str,
 ) -> Result<()> {
+    let (encoding, body) = encode_text_body(text);
     write_part_header(
         out,
         boundary,
         &[
             ("Content-Type", format!("{content_type}; charset=utf-8")),
-            ("Content-Transfer-Encoding", "8bit".to_string()),
+            ("Content-Transfer-Encoding", encoding.to_string()),
         ],
     )?;
-    out.push_str(&normalise_newlines(text));
+    out.push_str(&body);
     out.push_str(CRLF);
     Ok(())
+}
+
+/// Picks the `Content-Transfer-Encoding` for a text body and returns it encoded.
+///
+/// `8bit` is only safe for a next hop that speaks 8BITMIME (RFC 6152) or
+/// SMTPUTF8 (RFC 6532), and RFC 5322 §2.1.1 forbids a line above 998 octets
+/// outright. Both cases go out as quoted-printable, which is 7-bit clean and
+/// wraps at 76 characters; everything else keeps the original bytes verbatim.
+fn encode_text_body(text: &str) -> (&'static str, String) {
+    let normalised = normalise_newlines(text);
+    if normalised.is_ascii() && !has_overlong_line(&normalised) {
+        ("8bit", normalised)
+    } else {
+        (
+            "quoted-printable",
+            crate::transfer::encode_quoted_printable(&normalised),
+        )
+    }
+}
+
+/// `true` when any line exceeds the 998 octets RFC 5322 §2.1.1 allows.
+fn has_overlong_line(text: &str) -> bool {
+    text.split(CRLF).any(|line| line.len() > MAX_BODY_LINE)
 }
 
 fn write_attachment(
