@@ -64,4 +64,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The gate must see feature-gated dependencies: without `[graph]`,
+      # cargo-deny resolves default features only and `rsa` (behind `dkim`,
+      # carrying RUSTSEC-2023-0071) is never audited. Fail the config rather
+      # than silently auditing a smaller graph than the crate ships.
+      - name: deny.toml audits every feature
+        run: |
+          set -eu
+          grep -qxF "[graph]" deny.toml || {
+            echo "::error file=deny.toml::no [graph] section, feature-gated dependencies would not be audited" >&2
+            exit 1
+          }
+          grep -qxF "all-features = true" deny.toml || {
+            echo "::error file=deny.toml::[graph] must set all-features = true" >&2
+            exit 1
+          }
       - uses: EmbarkStudios/cargo-deny-action@v2

@@ -1,5 +1,16 @@
+# The gate must see feature-gated dependencies, not just the default ones.
+# Without this block cargo-deny resolves default features only, and `rsa` -
+# which sits behind the non-default `dkim` feature and carries
+# RUSTSEC-2023-0071 - is invisible: "advisories ok" for a graph that was
+# never audited. `unused-ignored-advisory = "deny"` turns a regression here
+# back into a failure (an ignore that matches no crate is an error).
+
+[graph]
+all-features = true
+
 [advisories]
 version = 2
+unused-ignored-advisory = "deny"
 yanked = "deny"
 ignore = [
     # RUSTSEC-2023-0071 ("Marvin attack"): `rsa`'s PKCS#1 v1.5 padding is not

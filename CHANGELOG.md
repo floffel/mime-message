@@ -61,6 +61,14 @@ manifest disagree.
 
 ### Security
 
+- **The advisory gate now audits every feature, not just the default set.** `deny.toml`
+  gains a `[graph] all-features = true` block, because cargo-deny otherwise resolves
+  default features only: `rsa` sits behind the non-default `dkim` feature and carries
+  RUSTSEC-2023-0071, so the gate reported `advisories ok` for a dependency graph it never
+  looked at. `unused-ignored-advisory = "deny"` makes that failure mode loud - an ignore
+  that matches no crate is now an error - and a CI step fails the config when the
+  `[graph]` block is removed. No API change; the documented ignore and its reasoning are
+  unchanged.
 - **The part budget is enforced while a `multipart` body is split, not after it.**
   `split_multipart` returned every part it found and `parse_entity` then built
   `Vec::with_capacity(raw_parts.len())` before the `max_parts` check could run, so a
