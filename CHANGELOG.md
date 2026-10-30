@@ -96,6 +96,18 @@ manifest disagree.
 
 ### Fixed
 
+- **A PEM key that fails to decode now reports a typed cause instead of a sentence.**
+  `SigningKey::from_pem` turned the PKCS#1 and PKCS#8 parser errors into
+  `Error::InvalidKey(String)` via `format!`, so `Error::source()` was always `None` and
+  the ASN.1/base64 cause was gone; the failed Ed25519 probe was discarded even earlier,
+  on the way into the RSA fallback. Both now arrive as
+  `Error::InvalidKeyPem(KeyParseError)` with the parser error as the `source()`, and
+  `KeyParseError::Pkcs8` keeps *both* probe answers, so "an Ed25519 key with a corrupt
+  field" and "a key of an algorithm this crate does not sign with" are distinguishable.
+  `Error` keeps `PartialEq`/`Eq` because both inner errors are `Copy + Eq`. A caller that
+  matched `Error::InvalidKey(_)` for a malformed PEM body needs `Error::InvalidKeyPem(_)`
+  now; that is part of the `0.4.0` batch below, not a patch.
+
 - **A text body is no longer allowed to break the 998-octet line limit, and non-ASCII
   bodies go out as quoted-printable instead of raw `8bit`.** RFC 5322 §2.1.1 says a line
   MUST be at most 998 characters, but the renderer copied the body into the message

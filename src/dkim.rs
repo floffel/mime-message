@@ -51,7 +51,7 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, KeyParseError, Result};
 use crate::{truncate, Message};
 
 /// Smallest RSA modulus accepted, in bits (RFC 8301 §3.2).
@@ -289,13 +289,14 @@ impl SigningKey {
     /// ```
     ///
     /// # Errors
-    ///
     /// [`Error::InvalidKey`] for anything that is not an unencrypted RSA or
     /// Ed25519 private key, and for RSA keys below 1024 bits.
     ///
-    /// [`Error::LimitExceeded`] when the input is longer than 64 KiB: no
-    /// deployed key comes close, and the bound keeps the PEM decode, the DER
-    /// parse and the big-integer allocation behind it proportional to a constant.
+    /// [`Error::InvalidKeyPem`] when the block is PEM but its PKCS#1 or PKCS#8
+    /// body does not decode, and [`Error::LimitExceeded`] when the input is
+    /// longer than 64 KiB: no deployed key comes close, and the bound keeps the
+    /// PEM decode, the DER parse and the big-integer allocation behind it
+    /// proportional to a constant.
     pub fn from_pem(pem: &str) -> Result<Self> {
         ensure_pem_size(pem)?;
         let label = pem_label(pem)
@@ -303,18 +304,21 @@ impl SigningKey {
         match label.as_str() {
             "RSA PRIVATE KEY" => {
                 let key = RsaPrivateKey::from_pkcs1_pem(pem)
-                    .map_err(|error| Error::InvalidKey(format!("RSA PKCS#1: {error}")))?;
+                    .map_err(|error| Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs1(error))))?;
                 Self::from_rsa(key)
             }
             "PRIVATE KEY" | "ED25519 PRIVATE KEY" => {
-                if let Ok(key) = ed25519_dalek::SigningKey::from_pkcs8_pem(pem) {
-                    return Ok(Self {
+                match ed25519_dalek::SigningKey::from_pkcs8_pem(pem) {
+                    Ok(key) => Ok(Self {
                         material: KeyMaterial::Ed25519(Box::new(key)),
-                    });
+                    }),
+                    Err(ed25519) => {
+                        let key = RsaPrivateKey::from_pkcs8_pem(pem).map_err(|rsa| {
+                            Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs8 { ed25519, rsa }))
+                        })?;
+                        Self::from_rsa(key)
+                    }
                 }
-                let key = RsaPrivateKey::from_pkcs8_pem(pem)
-                    .map_err(|error| Error::InvalidKey(format!("PKCS#8: {error}")))?;
-                Self::from_rsa(key)
             }
             other => Err(Error::InvalidKey(format!(
                 "unsupported PEM label {other:?}"
