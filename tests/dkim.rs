@@ -347,10 +347,27 @@ fn malformed_keys_are_rejected_without_leaking_material() {
     ];
     for pem in bad_pems {
         let error = SigningKey::from_pem(pem).unwrap_err();
-        assert!(
-            matches!(error, Error::InvalidKey(_)),
-            "{pem:?} -> {error:?}"
-        );
+        // Only the labels this crate claims reach the PKCS decoder, and only those can
+        // fail with a typed cause; any other label, and text without a BEGIN line, is
+        // rejected by our own check and stays a plain InvalidKey.
+        let claimed = ["RSA PRIVATE KEY", "PRIVATE KEY", "ED25519 PRIVATE KEY"]
+            .iter()
+            .any(|label| pem.contains(&format!("-----BEGIN {label}-----")));
+        if claimed {
+            assert!(
+                matches!(error, Error::InvalidKeyPem(_)),
+                "{pem:?} -> {error:?}"
+            );
+            assert!(
+                std::error::Error::source(&error).is_some(),
+                "a typed cause must carry the parser error: {error:?}"
+            );
+        } else {
+            assert!(
+                matches!(error, Error::InvalidKey(_)),
+                "{pem:?} -> {error:?}"
+            );
+        }
         let text = format!("{error:?}");
         assert!(!text.contains("AAAA"), "error leaked key bytes: {text}");
     }

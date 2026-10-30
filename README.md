@@ -179,7 +179,10 @@ assert_eq!(signature.domain, "example.com");
   (raw or base64) and DNS TXT records (`v=DKIM1; k=rsa|ed25519; p=…`). RSA keys
   below 1024 bits are rejected (RFC 8301), as are revoked (`p=`) records, unknown
   key types and unparseable base64 — all `Error::InvalidKey`, which never
-  contains key material.
+  contains key material. A PEM block whose body does not decode is
+  `Error::InvalidKeyPem`: it carries the PKCS#1/PKCS#8 parser error as its
+  `source()`, so the cause chain reaches the DER layer instead of ending in a
+  rendered sentence.
 - Signing is deterministic: the timestamp is a parameter, header order comes from
   the rendered message, and `h=` lists every field present, duplicates once per
   occurrence so a receiver's bottom-up instance selection covers each one. `Bcc`
