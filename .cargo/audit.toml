@@ -1,0 +1,13 @@
+# `cargo audit` configuration, mirroring the ignore that `deny.toml`
+# ([advisories].ignore) applies to the same advisory. `deny.toml` resolves the
+# graph with `all-features = true`, so `cargo-deny` sees `rsa` (behind the
+# non-default `dkim` feature) and needs the documented exception; without this
+# file `cargo audit` reports the same advisory as an unmitigated failure and the
+# exception only exists in one of the two gates.
+#
+# The justification lives in `deny.toml` and must be kept in sync: this crate
+# signs with a fixed, caller-supplied key and verifies with public keys only, so
+# the vulnerable PKCS#1 v1.5 decryption path is unreachable. Upstream ships
+# `patched = []`; re-check both files when `rsa` 0.10 lands.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
