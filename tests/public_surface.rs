@@ -240,3 +240,34 @@ fn crate_level_lints_stay_in_place() {
         );
     }
 }
+
+/// The README is documentation that runs, not prose next to the code.
+///
+/// `lib.rs` pulls `README.md` into the crate documentation under `cfg(doctest)`,
+/// so `cargo test --doc` compiles and executes the quick start and the `cid:`
+/// example. Deleting that one attribute silently turns both back into text that
+/// cannot fail, which is exactly the drift this test refuses.
+#[test]
+fn readme_rust_blocks_are_compiled_as_doctests() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let lib = fs::read_to_string(root.join("src/lib.rs")).expect("src/lib.rs is readable");
+    let hook = r#"#![cfg_attr(doctest, doc = include_str!("../README.md"))]"#;
+    assert!(
+        lib.contains(hook),
+        "src/lib.rs lost `{hook}`, so the README is no longer compiled by `cargo test --doc`"
+    );
+
+    let readme = fs::read_to_string(root.join("README.md")).expect("README.md is readable");
+    let runnable = readme
+        .lines()
+        .filter(|line| line.starts_with("```rust") && !line.contains("ignore"))
+        .count();
+    assert!(
+        runnable >= 2,
+        "README.md has {runnable} compiled Rust block(s): the quick start and the `cid:` example are both programs"
+    );
+    assert!(
+        readme.contains("fn main() -> Result<(), Box<dyn std::error::Error>>"),
+        "the README examples stay full programs, so they also compile when copied out of the page"
+    );
+}
