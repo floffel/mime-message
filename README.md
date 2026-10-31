@@ -158,7 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     assert_eq!(
         html,
-        "<p><img src=\"/MUTANT/logo@example.com\" alt=\"Logo\"></p>"
+        "<p><img src=\"/inline/logo@example.com\" alt=\"Logo\"></p>"
     );
     Ok(())
 }
@@ -217,6 +217,10 @@ let key = VerifyingKey::from_dns_record("v=DKIM1; k=rsa; p=MIGf…")?;
 let signature = dkim::verify(std::str::from_utf8(&signed)?, &key)?;
 assert_eq!(signature.domain, "example.com");
 ```
+
+The block above is `ignore` because it needs the `dkim` feature and a key on
+disk: the same code, runnable and asserted, is the doctest on
+[`Message::sign`] and `dkim::sign` (both compiled in the `--all-features` CI job).
 
 - Keys: PKCS#1 and PKCS#8 RSA PEM, PKCS#8 Ed25519 PEM, a 32-byte Ed25519 seed
   (raw or base64) and DNS TXT records (`v=DKIM1; k=rsa|ed25519; p=…`). RSA keys
