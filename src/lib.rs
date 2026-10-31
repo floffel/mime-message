@@ -44,6 +44,11 @@
 //! # Ok::<(), mime_message::Error>(())
 //! ```
 
+// The README is the crate-level documentation that runs: its Rust blocks are
+// compiled and executed as doctests (`cargo test --doc`), so the quick start
+// cannot drift from the API. Only under `cfg(doctest)` — the rendered docs on
+// docs.rs stay the `//!` text above, and no README prose is duplicated there.
+#![cfg_attr(doctest, doc = include_str!("../README.md"))]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
