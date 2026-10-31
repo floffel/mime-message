@@ -5,18 +5,33 @@ no `unsafe`, no network access. Optional DKIM signing and verification behind a
 feature flag.
 
 ```rust
-let raw = Message::builder()
-    .from("Shop <shop@example.com>")?
-    .to("kunde@example.com")?
-    .subject("Ihre Rechnung")
-    .body("Anbei die Rechnung.")
-    .attachment(Attachment::new("rechnung.pdf", "application/pdf", pdf_bytes))
-    .build()?
-    .render()?;
+use mime_message::{Attachment, Message};
 
-// … and back again.
-let message = Message::parse(std::str::from_utf8(&raw)?)?;
-assert_eq!(message.attachments[0].filename, "rechnung.pdf");
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The caller's bytes; the crate never interprets an attachment.
+    let pdf = b"%PDF-1.4\n% a real invoice goes here\n".to_vec();
+
+    let raw = Message::builder()
+        .from("Shop <shop@example.com>")?
+        .to("kunde@example.com")?
+        .subject("Ihre Rechnung")
+        .body("Anbei die Rechnung.")                      // text/plain
+        .html_body("<p>Anbei die <b>Rechnung</b>.</p>")   // text/html alternative
+        .attachment(Attachment::new("rechnung.pdf", "application/pdf", pdf))
+        .build()?
+        .render()?;
+
+    // … and back again: body, alternative and attachment all survive.
+    let text = std::str::from_utf8(&raw)?;
+    let parsed = Message::parse(text)?;
+    assert_eq!(parsed.body.trim(), "Anbei die Rechnung.");
+    assert_eq!(
+        parsed.html_body.as_deref(),
+        Some("<p>Anbei die <b>Rechnung</b>.</p>")
+    );
+    assert_eq!(parsed.attachments[0].filename, "rechnung.pdf");
+    Ok(())
+}
 ```
 
 Deterministic: no clock, no randomness — pass `Date` and `Message-ID` if you
@@ -30,7 +45,7 @@ invoice mail — text plus an HTML alternative, an inline logo with a
 `Content-ID` and a PDF attachment — then parses the rendered bytes back and
 asserts the round trip:
 
-```
+```text
 cargo run --example compose_and_parse
 ```
 
@@ -114,11 +129,39 @@ claims:
 and the caller decides how a reference is resolved — nothing is fetched:
 
 ```rust
-let part = message.part_by_content_id("cid:logo@example.com");     // no network
-let html = message.rewrite_cid_references(&original_html);         // data: URIs
-let html = cid::rewrite(&original_html, |reference| {              // or your URLs
-    message.part_by_content_id(reference).map(|part| format!("/inline/{reference}"))
-});
+use mime_message::{cid, Attachment, Message};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let message = Message::builder()
+        .from("shop@example.com")?
+        .to("kunde@example.com")?
+        .body("Anbei die Rechnung.")
+        .html_body("<p><img src=\"cid:logo@example.com\" alt=\"Logo\"></p>")
+        .attachment(
+            Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
+                .with_content_id("logo@example.com"),
+        )
+        .build()?;
+    let original_html = message.html_body.clone().unwrap_or_default();
+
+    // The part itself — nothing is fetched.
+    let part = message.part_by_content_id("cid:logo@example.com");
+    assert_eq!(part.map(|part| part.filename.as_str()), Some("logo.png"));
+
+    // The built-in rewrite inlines the bytes as a `data:` URI …
+    let html = message.rewrite_cid_references(&original_html);
+    assert!(html.starts_with("<p><img src=\"data:image/png;base64,"));
+
+    // … or every reference goes to your own URL scheme.
+    let html = cid::rewrite(&original_html, |reference| {
+        message.part_by_content_id(reference).map(|_| format!("/inline/{reference}"))
+    });
+    assert_eq!(
+        html,
+        "<p><img src=\"/MUTANT/logo@example.com\" alt=\"Logo\"></p>"
+    );
+    Ok(())
+}
 ```
 
 Lookups strip the `cid:` scheme and angle brackets, so `logo`, `cid:logo` and
@@ -162,7 +205,7 @@ mime-message = { version = "0.3", features = ["dkim"] }
 RFC 6376 `rsa-sha256` and RFC 8463 `ed25519-sha256`, `simple` and `relaxed`
 canonicalization for headers and body, signing and verification:
 
-```rust,no_run
+```rust,ignore
 use mime_message::dkim::{self, SignParams, SigningKey, VerifyingKey};
 
 let key = SigningKey::from_pem(&std::fs::read_to_string("dkim-private.pem")?)?;
@@ -259,7 +302,7 @@ Documented rather than silently missing:
 
 ### Fuzzing
 
-```
+```text
 cargo +nightly fuzz build parse       # CI builds this target
 cargo +nightly fuzz run parse         # run it (seeds: fuzz/corpus/parse)
 cargo +nightly fuzz run parse fuzz/artifacts/parse/<crash>   # reproduce
