@@ -307,7 +307,7 @@ impl SigningKey {
                     .map_err(|error| Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs1(error))))?;
                 Self::from_rsa(key)
             }
-            "PRIVATE KEY" | "ED25519 PRIVATE KEY" => {
+            "PRIVATE KEY" => {
                 match ed25519_dalek::SigningKey::from_pkcs8_pem(pem) {
                     Ok(key) => Ok(Self {
                         material: KeyMaterial::Ed25519(Box::new(key)),

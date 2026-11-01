@@ -177,20 +177,23 @@ fn valid_keys_still_load_for_each_standard_label() {
 }
 
 #[test]
-fn a_relabelled_block_reports_both_probes_of_the_real_decoders() {
-    // `ED25519 PRIVATE KEY` passes the label match, but both decoders require the
-    // standard PKCS#8 label, so the body is rejected with one typed cause that still
-    // carries what each probe said. That the arm cannot succeed even with a valid body
-    // is filed separately: the label is accepted and then unusable.
+fn a_relabelled_block_is_rejected_as_unsupported_label() {
+    // `ED25519 PRIVATE KEY` is not a supported label in this crate.
     let relabelled = pem("ED25519 PRIVATE KEY", &body_of("rsa-private-pkcs8.pem"));
     let error = SigningKey::from_pem(&relabelled).unwrap_err();
     assert!(
-        matches!(cause_of(&error), KeyParseError::Pkcs8 { .. }),
-        "expected a typed PKCS#8 cause, got {error:?}"
+        matches!(error, Error::InvalidKey(_)),
+        "expected unsupported label error, got {error:?}"
     );
     let rendered = error.to_string();
-    assert!(rendered.contains("neither Ed25519"), "{rendered}");
-    assert!(rendered.contains("nor RSA"), "{rendered}");
+    assert!(
+        rendered.contains("unsupported PEM label"),
+        "error should name unsupported label: {rendered}"
+    );
+    assert!(
+        std::error::Error::source(&error).is_none(),
+        "unsupported labels should not carry parser sources"
+    );
 }
 
 #[test]
