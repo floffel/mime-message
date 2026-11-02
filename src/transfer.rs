@@ -37,15 +37,56 @@ const LENIENT: GeneralPurpose = GeneralPurpose::new(
 /// # Errors
 ///
 /// Returns [`Error::InvalidBase64`] when the payload contains characters outside
-/// the base64 alphabet or impossible padding.
+/// the base64 alphabet or impossible padding. The error carries the byte offset
+/// in `input` — line breaks and spaces counted — of the byte the decoder
+/// rejected, or `input.len()` when only the length or the padding is wrong, and
+/// `part: 0`, because a payload decoded on its own is not part of a message.
 pub fn decode_base64(input: &str) -> Result<Vec<u8>> {
+    decode_base64_in_part(input, 0)
+}
+
+/// [`decode_base64`] for the body of entity number `part` of a parsed message.
+pub(crate) fn decode_base64_in_part(input: &str, part: usize) -> Result<Vec<u8>> {
     let mut compact = Vec::with_capacity(input.len());
     for byte in input.bytes() {
         if !byte.is_ascii_whitespace() {
             compact.push(byte);
         }
     }
-    LENIENT.decode(&compact).map_err(|_| Error::InvalidBase64)
+    LENIENT
+        .decode(&compact)
+        .map_err(|error| Error::InvalidBase64 {
+            part,
+            offset: rejected_offset(input, &error),
+        })
+}
+
+/// Maps the decoder's verdict onto a byte offset in `input`.
+///
+/// The decoder counts in the whitespace-free payload it was handed, which is not
+/// the offset a caller can look up in the message; the offset is therefore mapped
+/// back onto the input as it arrived.
+fn rejected_offset(input: &str, error: &base64::DecodeError) -> usize {
+    let index = match *error {
+        base64::DecodeError::InvalidByte(index, _)
+        | base64::DecodeError::InvalidLastSymbol { offset: index, .. } => index,
+        // No byte is wrong, only how many there are: the payload stops short or
+        // its padding is impossible, so the error sits just past its end.
+        base64::DecodeError::InvalidLength(_) | base64::DecodeError::InvalidPadding => {
+            return input.len();
+        }
+    };
+    nth_payload_byte(input, index).unwrap_or(input.len())
+}
+
+/// The input offset of the `n`-th byte that survives the whitespace filter.
+fn nth_payload_byte(input: &str, n: usize) -> Option<usize> {
+    input
+        .bytes()
+        .enumerate()
+        .filter(|(_, byte)| !byte.is_ascii_whitespace())
+        .nth(n)
+        .map(|(offset, _)| offset)
 }
 
 /// Decodes a quoted-printable body.
@@ -217,10 +258,53 @@ mod tests {
 
     #[test]
     fn base64_rejects_alphabet_violations() {
-        assert_eq!(decode_base64("SGVsbG8*"), Err(Error::InvalidBase64));
+        assert_eq!(
+            decode_base64("SGVsbG8*"),
+            Err(Error::InvalidBase64 { part: 0, offset: 7 })
+        );
         assert_eq!(decode_base64("SGV sbG8=").err(), None); // whitespace is fine
-        assert_eq!(decode_base64("===="), Err(Error::InvalidBase64));
-        assert_eq!(decode_base64("S"), Err(Error::InvalidBase64));
+        assert_eq!(
+            decode_base64("===="),
+            Err(Error::InvalidBase64 { part: 0, offset: 0 })
+        );
+    }
+
+    /// The offset is a position in the text the caller still has: the decoder
+    /// counts in the whitespace-free payload, so the offset is mapped back.
+    #[test]
+    fn base64_offset_counts_the_line_breaks_the_decoder_skipped() {
+        assert_eq!(
+            decode_base64("SGVs\r\nbG8=*"),
+            Err(Error::InvalidBase64 {
+                part: 0,
+                offset: 10
+            })
+        );
+        assert_eq!(
+            decode_base64("QUJD\r\nQUJ*.QUJD"),
+            Err(Error::InvalidBase64 { part: 0, offset: 9 })
+        );
+    }
+
+    /// A payload that is only too short has no wrong byte, so the offset is the
+    /// position just past its end — which is still a position in the input.
+    #[test]
+    fn base64_length_errors_point_past_the_end() {
+        // Just inside the limit: two symbols are a complete quad.
+        assert_eq!(decode_base64("AB").unwrap(), vec![0]);
+        // One symbol short of a quad, wrapped the way a body arrives.
+        assert_eq!(
+            decode_base64("S\r\n"),
+            Err(Error::InvalidBase64 { part: 0, offset: 3 })
+        );
+    }
+
+    #[test]
+    fn a_part_number_travels_with_the_error() {
+        assert_eq!(
+            decode_base64_in_part("SGVsbG8*", 7),
+            Err(Error::InvalidBase64 { part: 7, offset: 7 })
+        );
     }
 
     #[test]

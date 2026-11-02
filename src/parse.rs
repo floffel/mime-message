@@ -178,12 +178,21 @@ struct Parser<'limits> {
 }
 
 impl Parser<'_> {
+    /// The ordinal of the entity the depth-first walk creates next.
+    ///
+    /// Entities are numbered 1, 2, … in the order the walk reaches them, the
+    /// message itself being 1. A header block belongs to the entity that is
+    /// created right after it is read, so this is the number its errors carry.
+    fn next_part(&self) -> usize {
+        self.parts + 1
+    }
+
     fn parse_message(&mut self, raw: &str) -> Result<Message> {
         let (head, body) = split_head(raw);
         if head.trim().is_empty() {
             return Err(Error::EmptyMessage);
         }
-        let headers = parse_header_block(head, self.limits)?;
+        let headers = parse_header_block(head, self.limits, self.next_part())?;
 
         let from = parse_address_list(
             headers.get("From").ok_or(Error::EmptyHeader("From"))?,
@@ -227,9 +236,12 @@ impl Parser<'_> {
                 limit: self.limits.max_parts,
             });
         }
+        // This entity's ordinal, for every error raised about its own headers and
+        // body. Read once: the counter moves on with the parts of a multipart.
+        let part = self.parts;
 
         let media = match headers.unique("Content-Type")? {
-            Some(value) => parse_media_type(value)?,
+            Some(value) => parse_media_type(value, part)?,
             None => MediaType::text_plain(),
         };
 
@@ -267,7 +279,7 @@ impl Parser<'_> {
                 .param("boundary")
                 .ok_or(Error::MissingBoundary)?
                 .to_string();
-            let text = self.decoded_text(body, encoding)?;
+            let text = self.decoded_text(body, encoding, part)?;
             // The part budget goes into the split, not onto its result: a
             // delimiter-dense body has to fail while it is scanned, before a `Vec`
             // slot per delimiter exists. That is also what bounds the
@@ -278,14 +290,16 @@ impl Parser<'_> {
             };
             let raw_parts = split_multipart(&text, &boundary, budget)?;
             let mut children = Vec::with_capacity(raw_parts.len());
-            for part in raw_parts {
-                let (part_head, part_body) = split_head(part);
-                let part_headers = parse_header_block(part_head, self.limits)?;
+            for raw_part in raw_parts {
+                let (part_head, part_body) = split_head(raw_part);
+                // This part is the entity the walk creates next, so its header
+                // block is read under that number.
+                let part_headers = parse_header_block(part_head, self.limits, self.next_part())?;
                 children.push(self.parse_entity(&part_headers, part_body, depth + 1)?);
             }
             Content::Multipart(children)
         } else {
-            Content::Body(self.decode_transfer(body, encoding)?)
+            Content::Body(self.decode_transfer(body, encoding, part)?)
         };
 
         Ok(Entity {
@@ -307,11 +321,11 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn decode_transfer(&self, body: &str, encoding: Encoding) -> Result<Vec<u8>> {
+    fn decode_transfer(&self, body: &str, encoding: Encoding, part: usize) -> Result<Vec<u8>> {
         self.check_body_size(body.len())?;
         let bytes = match encoding {
             Encoding::Identity => body.as_bytes().to_vec(),
-            Encoding::Base64 => transfer::decode_base64(body)?,
+            Encoding::Base64 => transfer::decode_base64_in_part(body, part)?,
             Encoding::QuotedPrintable => transfer::decode_quoted_printable(body),
         };
         // Decoding must never amplify: base64 shrinks, QP shrinks or matches.
@@ -319,14 +333,19 @@ impl Parser<'_> {
         Ok(bytes)
     }
 
-    fn decoded_text<'a>(&self, body: &'a str, encoding: Encoding) -> Result<Cow<'a, str>> {
+    fn decoded_text<'a>(
+        &self,
+        body: &'a str,
+        encoding: Encoding,
+        part: usize,
+    ) -> Result<Cow<'a, str>> {
         match encoding {
             Encoding::Identity => {
                 self.check_body_size(body.len())?;
                 Ok(Cow::Borrowed(body))
             }
             _ => Ok(Cow::Owned(
-                String::from_utf8_lossy(&self.decode_transfer(body, encoding)?).into_owned(),
+                String::from_utf8_lossy(&self.decode_transfer(body, encoding, part)?).into_owned(),
             )),
         }
     }
@@ -457,15 +476,22 @@ impl Headers {
     }
 }
 
-fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
+/// Parses one entity's header block, numbering the lines it rejects.
+///
+/// `part` is the ordinal of the entity the block belongs to (see
+/// [`Error::MalformedHeader`]); it and the 1-based line of the offending field
+/// travel with the error, so a failure inside a nested part is locatable.
+fn parse_header_block(block: &str, limits: &Limits, part: usize) -> Result<Headers> {
     // Names and raw values first: a continuation line appends to the value of
     // the field above it, exactly as it stood on the wire.
     let mut raw: Vec<(String, String)> = Vec::new();
     let mut total = 0usize;
+    let mut line_number = 0usize;
     let mut rest = block;
 
     while !rest.is_empty() {
         let (line, next) = next_line(rest);
+        line_number += 1;
         total = total.saturating_add(line.len() + 2);
         if total > limits.max_header_bytes {
             return Err(Error::LimitExceeded {
@@ -485,15 +511,15 @@ fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
                     value.push_str("\r\n");
                     value.push_str(line);
                 }
-                None => return Err(Error::MalformedHeader(truncate(line, 120))),
+                None => return Err(malformed_header(part, line_number, line)),
             }
         } else {
             let Some(colon) = line.find(':') else {
-                return Err(Error::MalformedHeader(truncate(line, 120)));
+                return Err(malformed_header(part, line_number, line));
             };
             let name = &line[..colon];
             if name.is_empty() || !name.bytes().all(is_tchar) {
-                return Err(Error::MalformedHeader(truncate(line, 120)));
+                return Err(malformed_header(part, line_number, line));
             }
             raw.push((name.to_string(), line[colon + 1..].to_string()));
             if raw.len() > limits.max_headers {
@@ -522,6 +548,15 @@ fn parse_header_block(block: &str, limits: &Limits) -> Result<Headers> {
     }
 
     Ok(headers)
+}
+
+/// The [`Error::MalformedHeader`] for one rejected line, with its position.
+fn malformed_header(part: usize, line: usize, text: &str) -> Error {
+    Error::MalformedHeader {
+        part,
+        line,
+        text: truncate(text, 120),
+    }
 }
 
 /// Splits `raw` into the header block and the body at the first blank line.
@@ -842,17 +877,24 @@ impl MediaType {
     }
 }
 
-fn parse_media_type(raw: &str) -> Result<MediaType> {
+/// Parses a `Content-Type` value, naming `part` when it is not a media type.
+fn parse_media_type(raw: &str, part: usize) -> Result<MediaType> {
     let (essence, params) = parse_parameterized(raw);
     let Some((kind, subtype)) = essence.split_once('/') else {
-        return Err(Error::InvalidContentType(truncate(raw, 120)));
+        return Err(Error::InvalidContentType {
+            part,
+            text: truncate(raw, 120),
+        });
     };
     if kind.is_empty()
         || subtype.is_empty()
         || !kind.bytes().all(is_tchar)
         || !subtype.bytes().all(is_tchar)
     {
-        return Err(Error::InvalidContentType(truncate(raw, 120)));
+        return Err(Error::InvalidContentType {
+            part,
+            text: truncate(raw, 120),
+        });
     }
     Ok(MediaType {
         kind: kind.to_string(),
@@ -1247,7 +1289,8 @@ mod tests {
 
     #[test]
     fn header_block_unfolds_continuations() {
-        let headers = parse_header_block("Subject: a\r\n\tb\r\nX: y", &Limits::default()).unwrap();
+        let headers =
+            parse_header_block("Subject: a\r\n\tb\r\nX: y", &Limits::default(), 1).unwrap();
         assert_eq!(headers.get("subject"), Some("a b"));
         assert_eq!(headers.get("x"), Some("y"));
     }
@@ -1256,6 +1299,7 @@ mod tests {
     fn media_type_parameters_and_rfc2231() {
         let media = parse_media_type(
             "text/plain; charset=\"utf-8\"; filename*0*=utf-8''Gr%C3%BC; filename*1*=n.pdf",
+            1,
         )
         .unwrap();
         assert_eq!(media.essence(), "text/plain");

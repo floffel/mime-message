@@ -136,15 +136,15 @@ fn duplicate_subject_keeps_the_first_value() {
 fn malformed_headers_are_typed_errors() {
     assert!(matches!(
         parse("From a@example.com\r\n\r\nx"),
-        Err(Error::MalformedHeader(_))
+        Err(Error::MalformedHeader { .. })
     ));
     assert!(matches!(
         parse("From : a@example.com\r\n\r\nx"),
-        Err(Error::MalformedHeader(_))
+        Err(Error::MalformedHeader { .. })
     ));
     assert!(matches!(
         parse("\tindented continuation without header\r\n\r\nx"),
-        Err(Error::MalformedHeader(_))
+        Err(Error::MalformedHeader { .. })
     ));
 }
 
@@ -278,7 +278,15 @@ fn base64_body_decodes_across_lines() {
 #[test]
 fn invalid_base64_is_a_typed_error() {
     let raw = with_from("Content-Transfer-Encoding: base64\r\n\r\n!!!!not base64!!!!");
-    assert_eq!(parse(&raw).unwrap_err(), Error::InvalidBase64);
+    // The body of the message itself is part 1: the location is the body of the
+    // part, not of the whole message.
+    assert_eq!(
+        parse(&raw).unwrap_err(),
+        Error::InvalidBase64 {
+            part: 1,
+            offset: 17
+        }
+    );
 }
 
 #[test]
@@ -499,7 +507,10 @@ fn truncated_multipart_is_a_typed_error() {
 #[test]
 fn invalid_content_type_is_a_typed_error() {
     let raw = with_from("Content-Type: text\r\n\r\nx");
-    assert!(matches!(parse(&raw), Err(Error::InvalidContentType(_))));
+    assert!(matches!(
+        parse(&raw),
+        Err(Error::InvalidContentType { part: 1, .. })
+    ));
 }
 
 #[test]

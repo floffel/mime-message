@@ -8,16 +8,47 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use mime_message::{parse, Message};
+use mime_message::{parse, Error, Message};
+
+/// A structural failure has to locate: the entity ordinal is a real entity (1 is
+/// the message itself), a line number is a wire line, and a base64 offset points
+/// inside the message it came from. A location that points nowhere is worse than
+/// none, because a caller trusts it.
+fn check_location(text: &str) {
+    match parse(text) {
+        Err(Error::InvalidBase64 { part, offset }) => {
+            assert!(part >= 1, "a parsed payload belongs to an entity");
+            assert!(
+                offset <= text.len(),
+                "offset {offset} is outside a {}-byte message",
+                text.len()
+            );
+        }
+        Err(Error::MalformedHeader {
+            part,
+            line,
+            text: field,
+        }) => {
+            assert!(part >= 1 && line >= 1, "a wire line has a position");
+            assert!(field.len() <= 120, "the payload stays truncated");
+        }
+        Err(Error::InvalidContentType { part, text: value }) => {
+            assert!(part >= 1, "a parsed media type belongs to an entity");
+            assert!(value.len() <= 120, "the payload stays truncated");
+        }
+        _ => {}
+    }
+}
 
 fuzz_target!(|data: &[u8]| {
     // Exact path: callers hand us `&str` from a socket.
     if let Ok(text) = std::str::from_utf8(data) {
-        let _ = parse(text);
+        check_location(text);
     }
 
     // Permissive path: 8-bit bodies are decoded lossily before parsing.
     let lossy = String::from_utf8_lossy(data);
+    check_location(&lossy);
     if let Ok(message) = Message::parse(&lossy) {
         // Rewriting `cid:` references is a pure transformation over arbitrary
         // HTML (or arbitrary text, since a body is whatever the sender wrote).

@@ -7,7 +7,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::error::{Error, Result};
-use crate::{cid, is_tchar, truncate, Mailbox, Message, MODELLED_HEADERS};
+use crate::{cid, is_tchar, Mailbox, Message, MODELLED_HEADERS};
 
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
@@ -107,7 +107,7 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
 fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
     for header in message.headers() {
         if !header.name().bytes().all(is_tchar) {
-            return Err(Error::MalformedHeader(truncate(header.name(), 120)));
+            return Err(Error::malformed_name(header.name()));
         }
         if MODELLED_HEADERS.iter().any(|name| header.is(name)) {
             // Rendering `From` twice is header injection with extra steps.
