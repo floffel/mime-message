@@ -15,7 +15,7 @@
 #![cfg(feature = "dkim")]
 
 use mime_message::dkim::{self, Canonicalization, SignParams, SigningKey, VerifyingKey};
-use mime_message::{Attachment, Error, Header, Message};
+use mime_message::{Attachment, Error, Header, KeyRejected, Message};
 
 const RFC8463_MESSAGE: &str = include_str!("fixtures/rfc8463-a3.eml");
 const RFC8463_RSA_RECORD: &str = "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
@@ -374,7 +374,14 @@ fn malformed_keys_are_rejected_without_leaking_material() {
 
     let small = fixture("rsa-small.pem");
     match SigningKey::from_pem(&small) {
-        Err(Error::InvalidKey(message)) => assert!(message.contains("1024"), "{}", message),
+        Err(Error::InvalidKey(reason)) => assert_eq!(
+            reason,
+            KeyRejected::BelowMinimumBits {
+                bits: 512,
+                minimum: 1024,
+            },
+            "a 512-bit key must be classified with the bits it has"
+        ),
         other => panic!("a 512-bit key must be rejected, got {other:?}"),
     }
 
@@ -532,7 +539,13 @@ fn an_rsa_public_key_pem_reads_and_rejects_small_keys() {
     let key = VerifyingKey::from_public_key_pem(&fixture("rsa-public.pem")).expect("public");
     assert_eq!(key.algorithm().as_str(), "rsa-sha256");
     match VerifyingKey::from_public_key_pem(&fixture("rsa-small-public.pem")) {
-        Err(Error::InvalidKey(message)) => assert!(message.contains("1024")),
+        Err(Error::InvalidKey(reason)) => assert_eq!(
+            reason,
+            KeyRejected::BelowMinimumBits {
+                bits: 512,
+                minimum: 1024,
+            }
+        ),
         other => panic!("512-bit key must be rejected: {other:?}"),
     }
     assert!(matches!(
@@ -571,7 +584,13 @@ fn a_small_rsa_key_in_a_record_is_rejected() {
         .collect();
     let record = format!("v=DKIM1; k=rsa; p={}", body.replace(['\n', '\r'], ""));
     match VerifyingKey::from_dns_record(&record) {
-        Err(Error::InvalidKey(message)) => assert!(message.contains("1024"), "{message}"),
+        Err(Error::InvalidKey(reason)) => assert_eq!(
+            reason,
+            KeyRejected::BelowMinimumBits {
+                bits: 512,
+                minimum: 1024,
+            }
+        ),
         other => panic!("512-bit record must be rejected: {other:?}"),
     }
 }

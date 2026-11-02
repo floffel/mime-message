@@ -51,11 +51,24 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
-use crate::error::{Error, KeyParseError, Result};
+use crate::error::{Error, KeyParseError, KeyRejected, Result};
 use crate::{truncate, Message};
 
 /// Smallest RSA modulus accepted, in bits (RFC 8301 §3.2).
 const MIN_RSA_BITS: usize = 1024;
+
+/// Length of an Ed25519 seed and of an Ed25519 public key, in bytes
+/// (RFC 8032 §5.1.5, RFC 8463 §4.2).
+const ED25519_KEY_BYTES: usize = 32;
+
+/// The `what` of a rejection about the raw or base64 seed of a signing key.
+const ED25519_SEED: &str = "Ed25519 seed";
+
+/// The `what` of a rejection about a `p=` Ed25519 public key.
+const ED25519_KEY: &str = "Ed25519 key";
+
+/// The `what` of a rejection about the base64 payload of a DNS `p=` tag.
+const P_TAG: &str = "p=";
 
 /// Longest line a folded `DKIM-Signature` may occupy.
 const MAX_LINE: usize = 78;
@@ -264,15 +277,20 @@ impl SigningKey {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidKey`] when the value is not base64 or does not decode to
-    /// exactly 32 bytes.
+    /// [`Error::InvalidKey`] when the value is not base64
+    /// ([`KeyRejected::NotBase64`]) or does not decode to exactly 32 bytes
+    /// ([`KeyRejected::WrongLength`]).
     pub fn from_ed25519_seed_base64(seed: &str) -> Result<Self> {
         let bytes = STANDARD
             .decode(seed.trim())
-            .map_err(|_| Error::InvalidKey("Ed25519 seed is not base64".to_string()))?;
-        let seed: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| Error::InvalidKey("Ed25519 seed must be 32 bytes".to_string()))?;
+            .map_err(|_| Error::InvalidKey(KeyRejected::NotBase64 { what: ED25519_SEED }))?;
+        let seed: [u8; ED25519_KEY_BYTES] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            Error::InvalidKey(KeyRejected::WrongLength {
+                what: ED25519_SEED,
+                expected: ED25519_KEY_BYTES,
+                found: bytes.len(),
+            })
+        })?;
         Ok(Self::from_ed25519_seed(&seed))
     }
 
@@ -290,7 +308,10 @@ impl SigningKey {
     ///
     /// # Errors
     /// [`Error::InvalidKey`] for anything that is not an unencrypted RSA or
-    /// Ed25519 private key, and for RSA keys below 1024 bits.
+    /// Ed25519 private key, and for RSA keys below 1024 bits. The payload is a
+    /// [`KeyRejected`], which names the stage (not a PEM block, a label this
+    /// crate does not read, an RSA modulus under the RFC 8301 floor) without
+    /// echoing the input.
     ///
     /// [`Error::InvalidKeyPem`] when the block is PEM but its PKCS#1 or PKCS#8
     /// body does not decode, and [`Error::LimitExceeded`] when the input is
@@ -299,8 +320,7 @@ impl SigningKey {
     /// proportional to a constant.
     pub fn from_pem(pem: &str) -> Result<Self> {
         ensure_pem_size(pem)?;
-        let label = pem_label(pem)
-            .ok_or_else(|| Error::InvalidKey("not a PEM block (no BEGIN line)".to_string()))?;
+        let label = pem_label(pem).ok_or(Error::InvalidKey(KeyRejected::NotPem))?;
         match label.as_str() {
             "RSA PRIVATE KEY" => {
                 let key = RsaPrivateKey::from_pkcs1_pem(pem)
@@ -320,18 +340,17 @@ impl SigningKey {
                     }
                 }
             }
-            other => Err(Error::InvalidKey(format!(
-                "unsupported PEM label {other:?}"
-            ))),
+            _ => Err(Error::InvalidKey(KeyRejected::UnsupportedPemLabel)),
         }
     }
 
     fn from_rsa(key: RsaPrivateKey) -> Result<Self> {
         let bits = key.size() * 8;
         if bits < MIN_RSA_BITS {
-            return Err(Error::InvalidKey(format!(
-                "RSA key is {bits} bits, RFC 8301 requires at least {MIN_RSA_BITS}"
-            )));
+            return Err(Error::InvalidKey(KeyRejected::BelowMinimumBits {
+                bits,
+                minimum: MIN_RSA_BITS,
+            }));
         }
         Ok(Self {
             material: KeyMaterial::Rsa(Box::new(key)),
@@ -460,39 +479,39 @@ impl VerifyingKey {
     ///
     /// [`Error::InvalidKey`] for a wrong version, an unsupported key type, a
     /// missing or revoked `p=`, base64 that does not decode, SPKI that is not
-    /// an RSA key, or an RSA key below 1024 bits.
+    /// an RSA key, or an RSA key below 1024 bits — each as a [`KeyRejected`]
+    /// reason, so nothing of the record reaches the message.
     pub fn from_dns_record(record: &str) -> Result<Self> {
-        let tags = parse_tags(record)
-            .map_err(|error| Error::InvalidKey(format!("DNS record: {error}")))?;
+        let tags = parse_tags(record).map_err(|defect| Error::InvalidKey(defect.rejected()))?;
         if let Some(version) = tags.get("v") {
             if version.trim() != "DKIM1" {
-                return Err(Error::InvalidKey(format!(
-                    "unsupported key record version {version:?}"
-                )));
+                return Err(Error::InvalidKey(KeyRejected::UnsupportedRecordVersion));
             }
         }
         let kind = tags.get("k").map_or("rsa", String::as_str);
         let encoded = tags
             .get("p")
-            .ok_or_else(|| Error::InvalidKey("DNS record has no p= tag".to_string()))?;
+            .ok_or(Error::InvalidKey(KeyRejected::MissingPublicKey))?;
         let compressed: String = encoded.chars().filter(|ch| !ch.is_whitespace()).collect();
         if compressed.is_empty() {
-            return Err(Error::InvalidKey(
-                "DNS record has a revoked key (p=)".to_string(),
-            ));
+            return Err(Error::InvalidKey(KeyRejected::RevokedKey));
         }
         let der = STANDARD
             .decode(&compressed)
-            .map_err(|_| Error::InvalidKey("p= is not base64".to_string()))?;
+            .map_err(|_| Error::InvalidKey(KeyRejected::NotBase64 { what: P_TAG }))?;
         match kind.trim().to_ascii_lowercase().as_str() {
             "rsa" => Self::rsa_from_der(&der),
             "ed25519" => {
-                let bytes: [u8; 32] = der
-                    .try_into()
-                    .map_err(|_| Error::InvalidKey("Ed25519 key must be 32 bytes".to_string()))?;
+                let bytes: [u8; ED25519_KEY_BYTES] = der.try_into().map_err(|der: Vec<u8>| {
+                    Error::InvalidKey(KeyRejected::WrongLength {
+                        what: ED25519_KEY,
+                        expected: ED25519_KEY_BYTES,
+                        found: der.len(),
+                    })
+                })?;
                 Self::ed25519_from_bytes(&bytes)
             }
-            other => Err(Error::InvalidKey(format!("unsupported key type {other:?}"))),
+            _ => Err(Error::InvalidKey(KeyRejected::UnsupportedKeyType)),
         }
     }
 
@@ -512,12 +531,13 @@ impl VerifyingKey {
     /// 1024 bits.
     pub fn rsa_from_der(der: &[u8]) -> Result<Self> {
         let key = RsaPublicKey::from_public_key_der(der)
-            .map_err(|error| Error::InvalidKey(format!("RSA public key: {error}")))?;
+            .map_err(|_| Error::InvalidKey(KeyRejected::InvalidRsaPublicKey))?;
         let bits = key.size() * 8;
         if bits < MIN_RSA_BITS {
-            return Err(Error::InvalidKey(format!(
-                "RSA key is {bits} bits, RFC 8301 requires at least {MIN_RSA_BITS}"
-            )));
+            return Err(Error::InvalidKey(KeyRejected::BelowMinimumBits {
+                bits,
+                minimum: MIN_RSA_BITS,
+            }));
         }
         Ok(Self {
             material: PublicMaterial::Rsa(Box::new(key)),
@@ -542,7 +562,7 @@ impl VerifyingKey {
     /// [`Error::InvalidKey`] when the bytes are not a valid curve point.
     pub fn ed25519_from_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let key = ed25519_dalek::VerifyingKey::from_bytes(bytes)
-            .map_err(|error| Error::InvalidKey(format!("Ed25519 public key: {error}")))?;
+            .map_err(|_| Error::InvalidKey(KeyRejected::InvalidEd25519PublicKey))?;
         Ok(Self {
             material: PublicMaterial::Ed25519(Box::new(key)),
         })
@@ -564,12 +584,13 @@ impl VerifyingKey {
     pub fn from_public_key_pem(pem: &str) -> Result<Self> {
         ensure_pem_size(pem)?;
         let key = RsaPublicKey::from_public_key_pem(pem)
-            .map_err(|error| Error::InvalidKey(format!("RSA public key: {error}")))?;
+            .map_err(|_| Error::InvalidKey(KeyRejected::InvalidRsaPublicKey))?;
         let bits = key.size() * 8;
         if bits < MIN_RSA_BITS {
-            return Err(Error::InvalidKey(format!(
-                "RSA key is {bits} bits, RFC 8301 requires at least {MIN_RSA_BITS}"
-            )));
+            return Err(Error::InvalidKey(KeyRejected::BelowMinimumBits {
+                bits,
+                minimum: MIN_RSA_BITS,
+            }));
         }
         Ok(Self {
             material: PublicMaterial::Rsa(Box::new(key)),
@@ -824,7 +845,8 @@ pub fn signatures(raw: &str) -> Result<Vec<SignatureHeader>> {
 impl SignatureHeader {
     fn parse(field: &Field) -> Result<Self> {
         let value = field.value();
-        let tags = parse_tags(value).map_err(Error::InvalidSignature)?;
+        let tags =
+            parse_tags(value).map_err(|defect| Error::InvalidSignature(defect.to_string()))?;
         let require = |name: &str| -> Result<&str> {
             tags.get(name)
                 .map(String::as_str)
@@ -1320,10 +1342,49 @@ fn pem_label(pem: &str) -> Option<String> {
     None
 }
 
+/// A defect in a `tag=value; …` list.
+///
+/// The defect is classified rather than rendered at the source, so the key path
+/// can report it without the caller's text: [`Error::InvalidKey`] carries a
+/// [`KeyRejected`], and the value of a `p=` tag is key material that must not
+/// travel into an error message. The signature path keeps rendering the detail,
+/// which is what tells a sender which tag to fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TagDefect {
+    /// A tag has no `=`; carries the already truncated text, for the signature
+    /// path only.
+    WithoutEquals(String),
+    /// A tag name is empty (`=x`).
+    EmptyName,
+    /// A tag appears twice; carries its name, for the signature path only.
+    Duplicate(String),
+}
+
+impl std::fmt::Display for TagDefect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WithoutEquals(part) => write!(formatter, "tag without '=': {part:?}"),
+            Self::EmptyName => write!(formatter, "empty tag name"),
+            Self::Duplicate(name) => write!(formatter, "duplicate {name}= tag"),
+        }
+    }
+}
+
+impl TagDefect {
+    /// The key-side classification: a reason without any caller text.
+    fn rejected(&self) -> KeyRejected {
+        match self {
+            Self::WithoutEquals(_) => KeyRejected::TagWithoutEquals,
+            Self::EmptyName => KeyRejected::EmptyTagName,
+            Self::Duplicate(_) => KeyRejected::DuplicateTag,
+        }
+    }
+}
+
 /// Parses a `tag=value; tag=value` list. Repeated tags are invalid.
 fn parse_tags(
     value: &str,
-) -> std::result::Result<std::collections::BTreeMap<String, String>, String> {
+) -> std::result::Result<std::collections::BTreeMap<String, String>, TagDefect> {
     let mut tags = std::collections::BTreeMap::new();
     for part in value.split(';') {
         let part = part.trim();
@@ -1331,14 +1392,14 @@ fn parse_tags(
             continue;
         }
         let Some((name, raw_value)) = part.split_once('=') else {
-            return Err(format!("tag without '=': {:?}", truncate(part, 40)));
+            return Err(TagDefect::WithoutEquals(truncate(part, 40)));
         };
         let name = name.trim().to_ascii_lowercase();
         if name.is_empty() {
-            return Err("empty tag name".to_string());
+            return Err(TagDefect::EmptyName);
         }
         if tags.contains_key(&name) {
-            return Err(format!("duplicate {name}= tag"));
+            return Err(TagDefect::Duplicate(name));
         }
         tags.insert(name, raw_value.trim().to_string());
     }

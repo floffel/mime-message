@@ -64,9 +64,9 @@ pub mod transfer;
 #[cfg(feature = "dkim")]
 pub mod dkim;
 
-#[cfg(feature = "dkim")]
-pub use error::KeyParseError;
 pub use error::{Error, Result};
+#[cfg(feature = "dkim")]
+pub use error::{KeyParseError, KeyRejected};
 pub use header::Header;
 pub use parse::{parse, parse_with_limits, Limits};
 
