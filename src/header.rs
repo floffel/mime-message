@@ -182,7 +182,7 @@ fn check_name(name: &str) -> Result<()> {
     if valid {
         Ok(())
     } else {
-        Err(Error::MalformedHeader(crate::truncate(name, 120)))
+        Err(Error::malformed_name(name))
     }
 }
 
@@ -250,15 +250,15 @@ mod tests {
         ));
         assert!(matches!(
             Header::new("X A", "x"),
-            Err(Error::MalformedHeader(_))
+            Err(Error::MalformedHeader { .. })
         ));
         assert!(matches!(
             Header::new("", "x"),
-            Err(Error::MalformedHeader(_))
+            Err(Error::MalformedHeader { .. })
         ));
         assert!(matches!(
             Header::new("X:A", "x"),
-            Err(Error::MalformedHeader(_))
+            Err(Error::MalformedHeader { .. })
         ));
     }
 
@@ -295,7 +295,7 @@ mod tests {
     fn non_ascii_names_are_rejected() {
         assert!(matches!(
             Header::new("X-Grüße", "x"),
-            Err(Error::MalformedHeader(_))
+            Err(Error::MalformedHeader { .. })
         ));
     }
 }

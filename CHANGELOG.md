@@ -45,6 +45,34 @@ manifest disagree.
 
 ### Changed
 
+- **Breaking (the next release is `0.4.0`): a structural parse failure now carries its location.**
+  `Error::InvalidBase64` was a unit variant, and `MalformedHeader` / `InvalidContentType` carried text
+  but no position, so an error inside a multipart body said *what* failed and never *where*: the
+  caller could not identify the part, the line or the byte, and the boundary from the type — first bad
+  byte versus just past the end — could not be tested. The three variants now carry
+  `InvalidBase64 { part, offset }`, `MalformedHeader { part, line, text }` and
+  `InvalidContentType { part, text }`, filled by `parse.rs`: `part` is the 1-based depth-first ordinal
+  of the MIME entity, the message itself being 1 (so the first child of a top-level `multipart` is 2,
+  read while the header block is parsed, not after the tree is built), `line` is the 1-based line
+  inside that entity's header block, and `offset` is a byte offset in that part's body with its line
+  breaks counted — the body length when only the length or the padding is wrong, which is the position
+  just past the end. `0` means "no wire position": a name rejected by `Header::new` /
+  `Header::from_wire` or by the renderer has neither a part nor a line, and
+  `transfer::decode_base64` (public, unchanged signature) decodes a payload that belongs to no
+  message. The offset is *mapped back* from the whitespace-free copy that the `base64` crate decodes,
+  so it is a position a caller can look up in the message they hold. `text` stays truncated to 120
+  bytes. Pinned by `tests/error_locations.rs` (`malformed_header_reports_the_part_and_the_line`,
+  `the_reported_line_is_the_one_that_fails_not_the_block`,
+  `a_continuation_line_without_a_field_names_its_line`, `invalid_base64_names_the_part_and_the_byte`,
+  `invalid_base64_points_past_the_end_when_no_byte_is_wrong`, `the_body_of_the_message_itself_is_part_one`,
+  `malformed_header_text_stays_truncated` — 120 bytes kept whole, 121 cut,
+  `a_field_without_a_message_has_no_position`, `the_rendered_error_carries_the_location`), the
+  transfer unit tests (a folded payload's offset counts the line break the decoder skipped; a length
+  error points at `input.len()`) and the proptest `base64_errors_stay_inside_the_input`, which
+  asserts every reported offset is a non-whitespace byte of the caller's input or its end. Callers
+  that matched these three variants need the new shapes; that belongs to the `0.4.0` batch, not a
+  patch.
+
 - **Breaking (the next release is `0.4.0`): the payload types are `#[non_exhaustive]`.**
   `Attachment`, `dkim::SignParams` and `dkim::SignatureHeader` now say so explicitly, so a
   field can be added (`Content-Disposition`, an `x=` expiry, a `q=` query method) without a

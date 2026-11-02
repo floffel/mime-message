@@ -207,7 +207,7 @@ fn header_values_with_line_breaks_are_rejected() {
 fn parsed_header_names_are_validated_like_rendered_ones() {
     assert!(matches!(
         parse("From: a@example.com\r\nX A: 1\r\n\r\nx"),
-        Err(Error::MalformedHeader(_))
+        Err(Error::MalformedHeader { .. })
     ));
 }
 

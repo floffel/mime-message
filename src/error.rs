@@ -31,8 +31,42 @@ pub enum Error {
     #[error("message has no headers")]
     EmptyMessage,
     /// A line in the header block is not `Name: value`.
-    #[error("malformed header line: {0:?}")]
-    MalformedHeader(String),
+    ///
+    /// The payload says *where*: `part` is the 1-based ordinal of the MIME entity
+    /// whose header block was being read, counted depth-first with the message
+    /// itself as part 1, and `line` is the 1-based line inside that block. Both
+    /// are 0 when the field never had a wire position — it was built through
+    /// [`Header::new`](crate::Header::new) or
+    /// `Header::from_wire`, or the renderer rejected a preserved name; `0` means
+    /// "unknown", the convention a compiler diagnostic without a span uses.
+    /// `text` is the offending line, truncated to 120 bytes.
+    ///
+    /// ```
+    /// use mime_message::{parse, Error, Header};
+    ///
+    /// let raw = "From: a@example.com\r\nSubject: ok\r\nX A: 1\r\n\r\nx";
+    /// let Error::MalformedHeader { part, line, .. } = parse(raw).unwrap_err() else {
+    ///     panic!("a field name with a space is malformed");
+    /// };
+    /// assert_eq!((part, line), (1, 3));
+    ///
+    /// // A name rejected without a message has no position to report.
+    /// let Error::MalformedHeader { part, line, .. } = Header::new("X A", "1").unwrap_err() else {
+    ///     panic!("a field name with a space is malformed");
+    /// };
+    /// assert_eq!((part, line), (0, 0));
+    /// ```
+    #[error("malformed header at part {part}, line {line}: {text:?}")]
+    MalformedHeader {
+        /// 1-based depth-first entity ordinal, the message itself being 1; `0`
+        /// when the field was never part of a parsed message.
+        part: usize,
+        /// 1-based line inside that entity's header block; `0` when there was no
+        /// wire line.
+        line: usize,
+        /// The offending line, truncated to 120 bytes.
+        text: String,
+    },
     /// A header value contains a forbidden control character (NUL, VT, FF, …).
     #[error("header {0:?} contains a control character")]
     ControlCharacter(String),
@@ -40,8 +74,27 @@ pub enum Error {
     #[error("duplicate header: {0}")]
     DuplicateHeader(String),
     /// `Content-Type` is not `type/subtype`.
-    #[error("invalid Content-Type: {0:?}")]
-    InvalidContentType(String),
+    ///
+    /// `part` names the entity whose header failed, in the same depth-first
+    /// numbering as [`Error::MalformedHeader`], and `text` is the offending
+    /// value, truncated to 120 bytes.
+    ///
+    /// ```
+    /// use mime_message::{parse, Error};
+    ///
+    /// let raw = "From: a@example.com\r\nContent-Type: text\r\n\r\nx";
+    /// let Error::InvalidContentType { part, text } = parse(raw).unwrap_err() else {
+    ///     panic!("`text` is not a media type");
+    /// };
+    /// assert_eq!((part, text.as_str()), (1, "text"));
+    /// ```
+    #[error("invalid Content-Type (part {part}): {text:?}")]
+    InvalidContentType {
+        /// 1-based depth-first entity ordinal, the message itself being 1.
+        part: usize,
+        /// The offending `Content-Type` value, truncated to 120 bytes.
+        text: String,
+    },
     /// A `multipart/*` body has no `boundary` parameter.
     #[error("multipart message without a boundary parameter")]
     MissingBoundary,
@@ -52,8 +105,48 @@ pub enum Error {
     #[error("unsupported Content-Transfer-Encoding: {0}")]
     UnsupportedTransferEncoding(String),
     /// A base64 payload contains characters outside the alphabet.
-    #[error("invalid base64 payload")]
-    InvalidBase64,
+    ///
+    /// The payload says *where*: `part` names the MIME entity whose body failed,
+    /// in the same depth-first numbering as [`Error::MalformedHeader`], and
+    /// `offset` is the byte offset of the byte the decoder rejected, counted
+    /// from the start of that part's body with its line breaks included. A
+    /// payload that is only too short, or padded impossibly, has no wrong byte to
+    /// point at; `offset` is then the length of the body — the position just past
+    /// the end. A `part` of 0 means the payload was decoded on its own, through
+    /// [`transfer::decode_base64`](crate::transfer::decode_base64), not as part
+    /// of a parsed message.
+    ///
+    /// ```
+    /// use mime_message::{parse, Error};
+    ///
+    /// let raw = concat!(
+    ///     "From: a@example.com\r\n",
+    ///     "Content-Transfer-Encoding: base64\r\n",
+    ///     "\r\n",
+    ///     "QUJD\r\nQUJ*\r\n",
+    /// );
+    /// let Error::InvalidBase64 { part, offset } = parse(raw).unwrap_err() else {
+    ///     panic!("the body is not base64");
+    /// };
+    /// assert_eq!(part, 1); // the message's own body
+    /// assert_eq!(offset, 9); // the '*' after the fold
+    ///
+    /// // A standalone payload belongs to no message, and a length error points
+    /// // one past the end instead of at a byte.
+    /// assert_eq!(
+    ///     mime_message::transfer::decode_base64("S").unwrap_err(),
+    ///     Error::InvalidBase64 { part: 0, offset: 1 }
+    /// );
+    /// ```
+    #[error("invalid base64 payload (part {part}, offset {offset})")]
+    InvalidBase64 {
+        /// 1-based depth-first entity ordinal, the message itself being 1; `0`
+        /// when the payload was decoded on its own.
+        part: usize,
+        /// Byte offset of the rejected byte in that part's body, line breaks
+        /// included; the body length when only its length or padding is wrong.
+        offset: usize,
+    },
     /// An attachment filename could escape a download directory.
     #[error("unsafe attachment filename: {0:?}")]
     UnsafeFilename(String),
@@ -107,6 +200,21 @@ pub enum Error {
     #[cfg(feature = "dkim")]
     #[error("DKIM signature does not verify: a signed header was modified")]
     SignatureMismatch,
+}
+
+impl Error {
+    /// A rejected field name from a call that had no wire position.
+    ///
+    /// [`Header::new`](crate::Header::new), `Header::from_wire` and the renderer
+    /// spot a bad name without a header block around it, so both location fields
+    /// of [`Error::MalformedHeader`] keep their "unknown" value, 0.
+    pub(crate) fn malformed_name(name: &str) -> Self {
+        Self::MalformedHeader {
+            part: 0,
+            line: 0,
+            text: crate::truncate(name, 120),
+        }
+    }
 }
 
 /// The PKCS#1 or PKCS#8 parser error behind [`Error::InvalidKeyPem`].
