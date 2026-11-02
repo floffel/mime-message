@@ -184,8 +184,19 @@ Everything malicious is a typed `Error`, never a panic or an OOM:
 | Huge bodies or base64 bombs | `LimitExceeded { what: "body bytes" }` |
 | Overlong header line / block / too many headers | `LimitExceeded { … }` |
 | Truncated multipart | `UnterminatedMultipart` |
+| A header line that is not `Name: value` | `MalformedHeader { part, line, text }` |
+| A `Content-Type` that is not `type/subtype` | `InvalidContentType { part, text }` |
 | `filename="../../etc/passwd"`, drive-relative `C:x`, backslash paths | `UnsafeFilename` |
-| Invalid base64 | `InvalidBase64` |
+| Invalid base64 | `InvalidBase64 { part, offset }` |
+
+The structural failures say *where*. `part` numbers the MIME entities depth-first,
+the message itself being 1, so the first child of a top-level `multipart` is part
+2; `line` counts the lines of that entity's header block from 1; `offset` is a
+byte offset in that part's body with its line breaks counted — the length of the
+body when only its length or padding is wrong, that is the position just past the
+end. A `part` of 0 means "no message to point at": `Header::new` rejects a name
+without a header block, and `transfer::decode_base64` decodes a payload that
+belongs to none.
 
 Defaults (see [`Limits`]): 32 levels of nesting, 1000 entities, 64 KiB of
 headers, 8 KiB per header line, 1000 header fields, 8 MiB per decoded body.
@@ -294,7 +305,8 @@ Documented rather than silently missing:
 - Property tests (`proptest`): arbitrary `Message` → render → parse round-trip
   (preserved headers included), render→parse→render stability, header folding
   round-trip, RFC 2047 round-trip, `parse` never panics on arbitrary text *or*
-  arbitrary bytes, base64/quoted-printable output bounded by input, charset
+  arbitrary bytes, base64/quoted-printable output bounded by input, base64 error
+  locations that stay inside the input it was given, charset
   decoding total, and — with `dkim` — the body hash against an independent
   canonicalizer for arbitrary bodies, sign→verify for arbitrary bodies, and
   tamper detection.

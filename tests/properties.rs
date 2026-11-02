@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use mime_message::{parse, parse_with_limits, Attachment, Limits, Mailbox, Message};
+use mime_message::{parse, parse_with_limits, Attachment, Error, Limits, Mailbox, Message};
 use proptest::prelude::*;
 
 const CONTENT_TYPES: [&str; 4] = [
@@ -294,6 +294,33 @@ proptest! {
     fn base64_decode_is_bounded(raw in "\\PC{0,200}") {
         if let Ok(bytes) = mime_message::transfer::decode_base64(&raw) {
             prop_assert!(bytes.len() <= raw.len());
+        }
+    }
+
+    /// A rejection points *inside* the text the caller handed in, never into the
+    /// whitespace-free copy the decoder works on: the offset is either a payload
+    /// byte, or the end of the input for a length or padding error. A location
+    /// that cannot be looked up in the caller's string would be no location.
+    #[test]
+    fn base64_errors_stay_inside_the_input(payload in "[A-Za-z0-9+/=*\\r\\n ]{0,200}") {
+        match mime_message::transfer::decode_base64(&payload) {
+            Ok(bytes) => prop_assert!(bytes.len() <= payload.len()),
+            Err(Error::InvalidBase64 { part, offset }) => {
+                prop_assert_eq!(part, 0, "a standalone payload names no part");
+                prop_assert!(
+                    offset <= payload.len(),
+                    "offset {offset} is outside a {}-byte input: {payload:?}",
+                    payload.len()
+                );
+                if offset < payload.len() {
+                    let byte = payload.as_bytes()[offset];
+                    prop_assert!(
+                        !byte.is_ascii_whitespace(),
+                        "offset {offset} lands on skipped whitespace in {payload:?}"
+                    );
+                }
+            }
+            Err(other) => prop_assert!(false, "decode_base64 returned {other:?}"),
         }
     }
 
