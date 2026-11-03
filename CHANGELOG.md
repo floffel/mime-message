@@ -45,7 +45,7 @@ manifest disagree.
 
 ### Changed
 
-- **Breaking (part of the `0.4.0` batch): `Error::InvalidKey` carries a `KeyRejected`, not a
+- **Breaking (the next release is `0.4.0`): `Error::InvalidKey` carries a `KeyRejected`, not a
   `String`.** A caller that matched `Error::InvalidKey(message)` now receives
   `Error::InvalidKey(reason)` and can match the stage — `NotPem`, `UnsupportedPemLabel`,
   `NotBase64 { what }`, `WrongLength { what, expected, found }`,
@@ -83,7 +83,6 @@ manifest disagree.
   asserts every reported offset is a non-whitespace byte of the caller's input or its end. Callers
   that matched these three variants need the new shapes; that belongs to the `0.4.0` batch, not a
   patch.
-
 - **Breaking (the next release is `0.4.0`): the payload types are `#[non_exhaustive]`.**
   `Attachment`, `dkim::SignParams` and `dkim::SignatureHeader` now say so explicitly, so a
   field can be added (`Content-Disposition`, an `x=` expiry, a `q=` query method) without a

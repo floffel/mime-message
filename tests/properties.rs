@@ -530,6 +530,31 @@ mod dkim_properties {
         body.to_string()
     }
 
+    /// `Display`, `Debug` and the whole source chain of one error, as a log line
+    /// would render it — the guarantee has to hold in every direction, not only
+    /// in `Display`.
+    fn rendered(error: &mime_message::Error) -> String {
+        use std::fmt::Write as _;
+
+        let mut text = format!("{error} {error:?}");
+        let mut cursor: Option<&(dyn std::error::Error + 'static)> =
+            std::error::Error::source(error);
+        while let Some(cause) = cursor {
+            // Writing into a `String` cannot fail.
+            let _ = write!(text, " {cause}");
+            cursor = std::error::Error::source(cause);
+        }
+        text
+    }
+
+    /// The longest run of base64 alphabet in `text`; a key is one long run.
+    fn longest_base64_run(text: &str) -> usize {
+        text.split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=')))
+            .map(str::len)
+            .max()
+            .unwrap_or(0)
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
@@ -590,6 +615,56 @@ mod dkim_properties {
                 "X-Note: something else",
             );
             prop_assert!(dkim::verify(&tampered, &key.verifying_key()).is_err());
+        }
+
+        /// Whatever key-shaped text is thrown at the key constructors, the
+        /// rejection that comes back is our own classification: no PEM marker,
+        /// no `PRIVATE`, no run of 100+ base64 characters, and a message whose
+        /// length does not grow with the input. `Error::InvalidKey` carries a
+        /// `KeyRejected`, so this holds for inputs nobody enumerated.
+        #[test]
+        fn key_rejections_never_render_key_material(
+            payload in "[A-Za-z0-9+/=]{0,160}",
+            tag in "v|k|p|h|s|d|t|b|bh|x|n",
+        ) {
+            let inputs = [
+                format!("v=DKIM1; p={payload}"),
+                format!("v=DKIM1; k={payload}; p=AA=="),
+                format!("v={payload}; p=AA=="),
+                format!("v=DKIM1; {payload}"),
+                format!("v=DKIM1; ={payload}"),
+                format!("v=DKIM1; p={payload}; p={payload}"),
+                format!("{tag}={payload}"),
+                format!("-----BEGIN {payload}-----\r\n{payload}\r\n-----END {payload}-----\r\n"),
+                payload.clone(),
+            ];
+            for input in inputs {
+                let errors = [
+                    SigningKey::from_pem(&input).err(),
+                    SigningKey::from_ed25519_seed_base64(&input).err(),
+                    mime_message::dkim::VerifyingKey::from_dns_record(&input).err(),
+                ];
+                for error in errors.into_iter().flatten() {
+                    // `InvalidKeyPem` keeps a third-party cause chain on purpose;
+                    // the promise under test is the one `InvalidKey` makes.
+                    if !matches!(error, mime_message::Error::InvalidKey(_)) {
+                        continue;
+                    }
+                    let text = rendered(&error);
+                    prop_assert!(
+                        !text.contains("BEGIN") && !text.contains("PRIVATE"),
+                        "a PEM marker reached the rejection: {}", text
+                    );
+                    prop_assert!(
+                        longest_base64_run(&text) < 100,
+                        "a base64 run reached the rejection: {}", text
+                    );
+                    prop_assert!(
+                        text.len() < 200,
+                        "the rejection grew with its input: {}", text
+                    );
+                }
+            }
         }
     }
 }

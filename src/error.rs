@@ -329,7 +329,7 @@ impl std::fmt::Display for KeyRejected {
             Self::NotPem => write!(formatter, "not a PEM block (no label line)"),
             Self::UnsupportedPemLabel => write!(
                 formatter,
-                "unsupported PEM label (expected an RSA private key block)"
+                "unsupported PEM label (expected a PKCS#1 or PKCS#8 private key block)"
             ),
             Self::NotBase64 { what } => write!(formatter, "{what} is not base64"),
             Self::WrongLength {
