@@ -338,7 +338,9 @@ impl Message {
     ///
     /// # Errors
     ///
-    /// Fails on header injection, missing headers, or no recipients.
+    /// Fails on header injection, missing headers, no recipients, an empty
+    /// `Content-ID`, and a `Content-ID` that would end its own `msg-id` early
+    /// ([`Error::ControlCharacter`]).
     pub fn render(&self) -> Result<Vec<u8>> {
         render::render(self)
     }

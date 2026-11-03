@@ -143,9 +143,11 @@ manifest disagree.
   VT, `0x7e` versus DEL, raw UTF-8 accepted), a CR that is not a fold reported as `0x0d`, the
   renderer's `Content-ID` path, and the rendered message; plus the proptest
   `header_new_reports_the_exact_byte`, which walks every byte below `0x80` and fails if the
-  payload carries anything but the byte that was rejected. A caller that matched
-  `Error::ControlCharacter(_)` needs the new shape; that is part of the `0.4.0` batch below,
-  not a patch.
+  payload carries anything but the byte that was rejected, and the same invariant in the
+  fuzz target (`fuzz/fuzz_targets/parse.rs`) over arbitrary input: the reported byte is in
+  the message and is a forbidden one. A caller that matched
+  `Error::ControlCharacter(_)` needs the new shape; that is part of the `0.4.0`
+  batch, not a patch.
 
 - **A PEM key that fails to decode now reports a typed cause instead of a sentence.**
   `SigningKey::from_pem` turned the PKCS#1 and PKCS#8 parser errors into

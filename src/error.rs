@@ -67,7 +67,7 @@ pub enum Error {
         /// The offending line, truncated to 120 bytes.
         text: String,
     },
-    /// A header field's value contains a forbidden control byte.
+    /// A header field's value contains a byte the field cannot carry.
     ///
     /// `name` names the field, in the casing it arrived with, and `byte` is the
     /// byte the check rejected, so the answer is not thrown away: a NUL, a VT, a
@@ -88,6 +88,17 @@ pub enum Error {
     ///     Error::ControlCharacter { name, byte }.to_string(),
     ///     r#"value of header "Subject" contains control byte 0x00"#
     /// );
+    ///
+    /// // A different byte is a different answer: a vertical tab, not a NUL.
+    /// let raw = "From: a@example.com\r\nSubject: a\u{b}b\r\n\r\nx";
+    /// let Error::ControlCharacter { byte, .. } = parse(raw).unwrap_err() else {
+    ///     panic!("a VT in a header value is rejected");
+    /// };
+    /// assert_eq!(byte, 0x0b);
+    ///
+    /// // The same field with a plain tab is accepted: tab is the one control
+    /// // character a value may carry.
+    /// assert!(parse("From: a@example.com\r\nSubject: a\tb\r\n\r\nx").is_ok());
     /// ```
     #[error("value of header {name:?} contains control byte 0x{byte:02x}")]
     ControlCharacter {
