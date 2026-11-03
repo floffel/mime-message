@@ -32,6 +32,21 @@ fn check_location(text: &str) {
             assert!(part >= 1 && line >= 1, "a wire line has a position");
             assert!(field.len() <= 120, "the payload stays truncated");
         }
+        Err(Error::ControlCharacter { name, byte }) => {
+            // The payload has to still identify the input: a control-byte
+            // rejection names a real field and a byte that is really in the
+            // message, and really one RFC 5322 keeps out of a value.
+            assert!(!name.is_empty(), "a rejection names its field");
+            assert!(
+                text.as_bytes().contains(&byte),
+                "control byte 0x{byte:02x} is not in a {}-byte input",
+                text.len()
+            );
+            assert!(
+                byte == 0x7f || (byte < 0x20 && byte != b'\t'),
+                "0x{byte:02x} is not a forbidden byte"
+            );
+        }
         Err(Error::InvalidContentType { part, text: value }) => {
             assert!(part >= 1, "a parsed media type belongs to an entity");
             assert!(value.len() <= 120, "the payload stays truncated");

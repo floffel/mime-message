@@ -186,16 +186,20 @@ fn a_preserved_header_cannot_smuggle_a_modelled_one() {
 
 #[test]
 fn header_values_with_line_breaks_are_rejected() {
-    for bad in [
-        "a\r\nBcc: evil@example.com",
-        "a\nb",
-        "a\rb",
-        "a\0b",
-        "a\u{7f}b",
+    for (bad, byte) in [
+        ("a\r\nBcc: evil@example.com", 0x0d),
+        ("a\nb", 0x0a),
+        ("a\rb", 0x0d),
+        ("a\0b", 0x00),
+        ("a\u{7f}b", 0x7f),
     ] {
-        assert!(
-            matches!(Header::new("X-A", bad), Err(Error::ControlCharacter(_))),
-            "{bad:?} must be rejected"
+        assert_eq!(
+            Header::new("X-A", bad).unwrap_err(),
+            Error::ControlCharacter {
+                name: "X-A".to_string(),
+                byte,
+            },
+            "{bad:?} must be rejected on byte 0x{byte:02x}"
         );
     }
     assert!(Header::new("X A", "x").is_err());

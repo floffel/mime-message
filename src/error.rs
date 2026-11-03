@@ -67,9 +67,54 @@ pub enum Error {
         /// The offending line, truncated to 120 bytes.
         text: String,
     },
-    /// A header value contains a forbidden control character (NUL, VT, FF, …).
-    #[error("header {0:?} contains a control character")]
-    ControlCharacter(String),
+    /// A header field's value contains a byte the field cannot carry.
+    ///
+    /// `name` names the field, in the casing it arrived with, and `byte` is the
+    /// byte the check rejected, so the answer is not thrown away: a NUL, a VT, a
+    /// DEL and a non-ASCII control character are different bugs, and a test can
+    /// assert which one fired. No byte is ever a placeholder here — every
+    /// rejection has a real byte behind it.
+    ///
+    /// ```
+    /// use mime_message::{parse, Error};
+    ///
+    /// let raw = "From: a@example.com\r\nSubject: a\u{0}b\r\n\r\nx";
+    /// let Error::ControlCharacter { name, byte } = parse(raw).unwrap_err() else {
+    ///     panic!("a NUL in a header value is rejected");
+    /// };
+    /// assert_eq!(name, "Subject");
+    /// assert_eq!(byte, 0x00);
+    /// assert_eq!(
+    ///     Error::ControlCharacter { name, byte }.to_string(),
+    ///     r#"value of header "Subject" contains control byte 0x00"#
+    /// );
+    ///
+    /// // A different byte is a different answer: a vertical tab, not a NUL.
+    /// let raw = "From: a@example.com\r\nSubject: a\u{b}b\r\n\r\nx";
+    /// let Error::ControlCharacter { byte, .. } = parse(raw).unwrap_err() else {
+    ///     panic!("a VT in a header value is rejected");
+    /// };
+    /// assert_eq!(byte, 0x0b);
+    ///
+    /// // The same field with a plain tab is accepted: tab is the one control
+    /// // character a value may carry.
+    /// assert!(parse("From: a@example.com\r\nSubject: a\tb\r\n\r\nx").is_ok());
+    /// ```
+    #[error("value of header {name:?} contains control byte 0x{byte:02x}")]
+    ControlCharacter {
+        /// The field whose value was rejected, with its original casing.
+        name: String,
+        /// The byte the check rejected.
+        ///
+        /// The byte-wise checks (`Header::new`, `Header::from_wire`, the parser
+        /// and the renderer) report the offending byte itself: below `0x20`
+        /// without tab, or `0x7f`. The `Content-ID` check reads *characters* and
+        /// also rejects `<`, `>` and whitespace, which are not control bytes but
+        /// cannot be re-rendered safely there; for a non-ASCII character it
+        /// reports the first byte of that character's UTF-8 encoding, because a
+        /// `char` above `0x7f` has no single byte of its own.
+        byte: u8,
+    },
     /// A structural header that must appear once appears more than once.
     #[error("duplicate header: {0}")]
     DuplicateHeader(String),
@@ -213,6 +258,20 @@ impl Error {
             part: 0,
             line: 0,
             text: crate::truncate(name, 120),
+        }
+    }
+
+    /// A control byte rejected in the value of `name`.
+    ///
+    /// One constructor for every place that rejects a control byte in a value —
+    /// [`Header::new`](crate::Header::new),
+    /// [`Header::from_wire`](crate::Header::from_wire), the parser, the
+    /// renderer's fold check and its `Content-ID` check — so the payload is
+    /// filled the same way everywhere and the name is converted once.
+    pub(crate) fn control_value(name: &str, byte: u8) -> Self {
+        Self::ControlCharacter {
+            name: name.to_string(),
+            byte,
         }
     }
 }

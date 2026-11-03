@@ -176,7 +176,7 @@ Everything malicious is a typed `Error`, never a panic or an OOM:
 | Attack | Result |
 | --- | --- |
 | CR, LF, NUL, U+0085/U+2028/U+2029 smuggled through an encoded-word | `HeaderInjection` |
-| Control characters in a header value | `ControlCharacter` |
+| Control characters in a header value | `ControlCharacter { name, byte }` |
 | Duplicate `Content-Type` / `Content-Transfer-Encoding` (content-type smuggling) | `DuplicateHeader` |
 | A preserved header that would duplicate a modelled one (`Subject`, `Content-Type`, …) | `DuplicateHeader` |
 | Deep `multipart` nesting | `LimitExceeded { what: "nesting depth" }` |
@@ -196,7 +196,9 @@ byte offset in that part's body with its line breaks counted — the length of t
 body when only its length or padding is wrong, that is the position just past the
 end. A `part` of 0 means "no message to point at": `Header::new` rejects a name
 without a header block, and `transfer::decode_base64` decodes a payload that
-belongs to none.
+belongs to none. `ControlCharacter { name, byte }` follows the same rule at the
+field level: it names the field whose *value* was rejected and keeps the byte the
+check rejected, so a NUL, a VT and a DEL stay distinguishable.
 
 Defaults (see [`Limits`]): 32 levels of nesting, 1000 entities, 64 KiB of
 headers, 8 KiB per header line, 1000 header fields, 8 MiB per decoded body.

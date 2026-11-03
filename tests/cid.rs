@@ -249,7 +249,13 @@ fn a_content_id_cannot_inject_a_header() {
         .expect("build");
     let mut broken = message.clone();
     broken.attachments[0].content_id = Some("a\r\nBcc: evil@example.com".to_string());
-    assert!(matches!(broken.render(), Err(Error::ControlCharacter(_))));
+    assert_eq!(
+        broken.render().unwrap_err(),
+        Error::ControlCharacter {
+            name: "Content-ID".to_string(),
+            byte: 0x0d,
+        }
+    );
 
     let mut empty = message.clone();
     empty.attachments[0].content_id = Some("<>".to_string());

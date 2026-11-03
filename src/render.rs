@@ -132,13 +132,12 @@ fn check_no_line_break(value: &str, name: &str) -> Result<()> {
                 if bytes.get(index + 1) != Some(&b'\n')
                     || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
                 {
-                    return Err(Error::ControlCharacter(name.to_string()));
+                    return Err(Error::control_value(name, b'\r'));
                 }
                 index += 2;
             }
-            b'\n' => return Err(Error::ControlCharacter(name.to_string())),
-            byte if (byte < 0x20 && byte != b'\t') || byte == 0x7F => {
-                return Err(Error::ControlCharacter(name.to_string()));
+            byte if crate::header::is_forbidden_byte(byte) => {
+                return Err(Error::control_value(name, byte));
             }
             _ => index += 1,
         }
@@ -255,18 +254,37 @@ fn write_attachment(
 }
 
 /// A `Content-ID` must stay inside its angle brackets.
+///
+/// The check reads characters, not bytes: `<`, `>`, NUL, any control character
+/// and any whitespace would end the `msg-id` before its closing bracket, so the
+/// rendered field would no longer parse back to the same value. The reported
+/// byte is the first byte of the rejected character's UTF-8 encoding, which is
+/// the character itself for everything below `0x80`.
 fn checked_content_id(raw: &str) -> Result<String> {
     let id = cid::normalise(raw);
     if id.is_empty() {
         return Err(Error::EmptyHeader("Content-ID"));
     }
-    if id
-        .chars()
-        .any(|ch| matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace())
-    {
-        return Err(Error::ControlCharacter("Content-ID".to_string()));
+    let hostile = id.chars().find(|ch| is_hostile_id_char(*ch));
+    match hostile {
+        // `encode_utf8` always writes at least one byte, so the first slot of
+        // the buffer is the leading byte of the character: nothing is guessed
+        // and no byte of the input is invented.
+        Some(ch) => {
+            let mut encoded = [0_u8; 4];
+            ch.encode_utf8(&mut encoded);
+            Err(Error::control_value("Content-ID", encoded[0]))
+        }
+        None => Ok(id.to_string()),
     }
-    Ok(id.to_string())
+}
+
+/// True for a character that would end a `Content-ID` before its closing `>`.
+///
+/// `<` and `>` would swallow the bracket that closes the `msg-id`, and NUL, a
+/// control character or any whitespace would end the field there.
+fn is_hostile_id_char(ch: char) -> bool {
+    matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace()
 }
 
 fn render_mailboxes(mailboxes: &[Mailbox]) -> String {

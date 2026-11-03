@@ -186,14 +186,33 @@ fn check_name(name: &str) -> Result<()> {
     }
 }
 
+/// The first byte of `value` that a header value may not contain, if any.
+///
+/// A value is `text` (RFC 5322 §2.2): no NUL, CR, LF or any other control byte
+/// below SP except tab, and no DEL. Bytes above `0x7f` are allowed — a value may
+/// carry raw UTF-8 and the cleartext of a parsed message is often exactly that.
+///
+/// Returning the byte rather than a bare `bool` is what lets
+/// [`Error::ControlCharacter`] say *which* byte was rejected; the folding check
+/// below cannot use this helper, because a CR is legal there when it opens a
+/// fold.
+pub(crate) fn forbidden_value_byte(value: &str) -> Option<u8> {
+    value.bytes().find(|byte| is_forbidden_byte(*byte))
+}
+
+/// True for the bytes RFC 5322 §2.2 keeps out of a field value.
+///
+/// Shared with the renderer, which checks a preserved header's raw value the
+/// same way before writing it back out.
+pub(crate) const fn is_forbidden_byte(byte: u8) -> bool {
+    byte == 0x7F || (byte < 0x20 && byte != b'\t')
+}
+
 fn check_value(name: &str, value: &str) -> Result<()> {
-    let hostile = value
-        .bytes()
-        .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7F);
-    if hostile {
-        return Err(Error::ControlCharacter(name.to_string()));
+    match forbidden_value_byte(value) {
+        Some(byte) => Err(Error::control_value(name, byte)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// Validates a raw value that may contain CRLF folds.
@@ -203,18 +222,18 @@ fn check_folded_value(name: &str, raw: &str) -> Result<()> {
     while index < bytes.len() {
         match bytes[index] {
             b'\r' => {
-                // Only CRLF followed by WSP is a legal fold.
-                if bytes.get(index + 1) != Some(&b'\n') {
-                    return Err(Error::ControlCharacter(name.to_string()));
-                }
-                if !matches!(bytes.get(index + 2), Some(b' ' | b'\t')) {
-                    return Err(Error::ControlCharacter(name.to_string()));
+                // Only CRLF followed by WSP is a legal fold. A CR that opens
+                // anything else is the byte reported: it is the one that has no
+                // business being there.
+                if bytes.get(index + 1) != Some(&b'\n')
+                    || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
+                {
+                    return Err(Error::control_value(name, b'\r'));
                 }
                 index += 2;
             }
-            b'\n' => return Err(Error::ControlCharacter(name.to_string())),
-            byte if (byte < 0x20 && byte != b'\t') || byte == 0x7F => {
-                return Err(Error::ControlCharacter(name.to_string()));
+            byte if is_forbidden_byte(byte) => {
+                return Err(Error::control_value(name, byte));
             }
             _ => index += 1,
         }
@@ -240,14 +259,20 @@ mod tests {
         assert_eq!(Header::new("X-A", "  y  ").unwrap().value(), "y");
         assert_eq!(Header::new("X-A", "  y  ").unwrap().raw_value(), " y");
         assert_eq!(Header::new("X-Empty", "").unwrap().raw_value(), "");
-        assert!(matches!(
-            Header::new("X-A", "a\nb"),
-            Err(Error::ControlCharacter(_))
-        ));
-        assert!(matches!(
-            Header::new("X-A", "a\u{0}b"),
-            Err(Error::ControlCharacter(_))
-        ));
+        assert_eq!(
+            Header::new("X-A", "a\nb").unwrap_err(),
+            Error::ControlCharacter {
+                name: "X-A".to_string(),
+                byte: 0x0a,
+            }
+        );
+        assert_eq!(
+            Header::new("X-A", "a\u{0}b").unwrap_err(),
+            Error::ControlCharacter {
+                name: "X-A".to_string(),
+                byte: 0x00,
+            }
+        );
         assert!(matches!(
             Header::new("X A", "x"),
             Err(Error::MalformedHeader { .. })
@@ -265,22 +290,40 @@ mod tests {
     #[test]
     fn from_wire_accepts_folds_only_with_leading_whitespace() {
         assert!(Header::from_wire("X-A", " a\r\n b").is_ok());
-        assert!(matches!(
-            Header::from_wire("X-A", " a\r\nb"),
-            Err(Error::ControlCharacter(_))
-        ));
-        assert!(matches!(
-            Header::from_wire("X-A", " a\rb"),
-            Err(Error::ControlCharacter(_))
-        ));
-        assert!(matches!(
-            Header::from_wire("X-A", " a\n b"),
-            Err(Error::ControlCharacter(_))
-        ));
-        assert!(matches!(
-            Header::from_wire("X-A", " a\u{7f}b"),
-            Err(Error::ControlCharacter(_))
-        ));
+        for (broken, byte) in [
+            (" a\r\nb", 0x0d),
+            (" a\rb", 0x0d),
+            (" a\n b", 0x0a),
+            (" a\u{7f}b", 0x7f),
+        ] {
+            assert_eq!(
+                Header::from_wire("X-A", broken).unwrap_err(),
+                Error::ControlCharacter {
+                    name: "X-A".to_string(),
+                    byte,
+                },
+                "{broken:?} must report 0x{byte:02x}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_forbidden_byte_is_found_at_its_edges() {
+        // Below SP except tab, plus DEL; every other byte is allowed, including
+        // the eight-bit ones a raw UTF-8 value is made of.
+        assert_eq!(forbidden_value_byte(""), None);
+        assert_eq!(forbidden_value_byte("a\tb"), None);
+        assert_eq!(forbidden_value_byte("a b"), None);
+        assert_eq!(forbidden_value_byte("a\u{7e}b"), None);
+        assert_eq!(forbidden_value_byte("a\u{1f}b"), Some(0x1f));
+        assert_eq!(forbidden_value_byte("a\u{7f}b"), Some(0x7f));
+        assert_eq!(forbidden_value_byte("a\u{0}b"), Some(0x00));
+        // The first offending byte wins, wherever it sits in the value.
+        assert_eq!(forbidden_value_byte("ok\u{0b} and\u{0c}"), Some(0x0b));
+        // U+0085 is a Unicode control character, but neither of its bytes is a
+        // control byte: this check is byte-wise, which is why the `Content-ID`
+        // check reads characters and has its own answer for the same input.
+        assert_eq!(forbidden_value_byte("Müller\u{85}"), None);
     }
 
     #[test]
