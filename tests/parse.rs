@@ -151,7 +151,13 @@ fn malformed_headers_are_typed_errors() {
 #[test]
 fn control_characters_in_headers_are_rejected() {
     let raw = "From: a@example.com\r\nSubject: a\0b\r\n\r\nx";
-    assert!(matches!(parse(raw), Err(Error::ControlCharacter(_))));
+    assert_eq!(
+        parse(raw).unwrap_err(),
+        Error::ControlCharacter {
+            name: "Subject".to_string(),
+            byte: 0x00,
+        }
+    );
 }
 
 #[test]

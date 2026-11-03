@@ -324,6 +324,48 @@ proptest! {
         }
     }
 
+    /// A control-byte rejection names a byte that is really in the input and is
+    /// really one the RFC forbids. The payload used to be just a name, so a
+    /// caller could not tell a NUL from a VT; a made-up byte would be just as
+    /// useless, hence the check against the input itself.
+    #[test]
+    fn control_errors_report_a_byte_of_the_input(raw in any::<String>()) {
+        if let Err(Error::ControlCharacter { name, byte }) = parse(&raw) {
+            prop_assert!(!name.is_empty(), "a rejection must name its field: {raw:?}");
+            prop_assert!(
+                raw.as_bytes().contains(&byte),
+                "byte 0x{byte:02x} is not in {raw:?}"
+            );
+            prop_assert!(
+                byte == 0x7F || (byte < 0x20 && byte != b'\t'),
+                "0x{byte:02x} is not a forbidden byte in {raw:?}"
+            );
+        }
+    }
+
+    /// Handing a value straight to `Header::new` is the one path with no wire
+    /// format in the way, so every byte below `0x80` can be checked at once: it
+    /// is rejected exactly when the rule forbids it, and the payload carries
+    /// that very byte — not a stand-in for it.
+    #[test]
+    fn header_new_reports_the_exact_byte(
+        prefix in "[ -~]{0,8}",
+        candidate in 0u8..=0x7f,
+        suffix in "[ -~]{0,8}",
+    ) {
+        let value = format!("{prefix}{}{suffix}", char::from(candidate));
+        let forbidden = candidate == 0x7F || (candidate < 0x20 && candidate != b'\t');
+        match mime_message::Header::new("X-A", &value) {
+            Err(Error::ControlCharacter { name, byte }) => {
+                prop_assert!(forbidden, "0x{candidate:02x} is allowed but was rejected");
+                prop_assert_eq!(name.as_str(), "X-A");
+                prop_assert_eq!(byte, candidate, "wrong byte for {:?}", value);
+            }
+            Err(other) => prop_assert!(false, "unexpected {other:?} for {:?}", value),
+            Ok(_) => prop_assert!(!forbidden, "0x{candidate:02x} must be rejected"),
+        }
+    }
+
     /// Charset decoding is total for arbitrary bytes and labels.
     #[test]
     fn charset_decode_is_total(

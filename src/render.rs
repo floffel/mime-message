@@ -132,13 +132,12 @@ fn check_no_line_break(value: &str, name: &str) -> Result<()> {
                 if bytes.get(index + 1) != Some(&b'\n')
                     || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
                 {
-                    return Err(Error::ControlCharacter(name.to_string()));
+                    return Err(Error::control_value(name, b'\r'));
                 }
                 index += 2;
             }
-            b'\n' => return Err(Error::ControlCharacter(name.to_string())),
-            byte if (byte < 0x20 && byte != b'\t') || byte == 0x7F => {
-                return Err(Error::ControlCharacter(name.to_string()));
+            byte if crate::header::is_forbidden_byte(byte) => {
+                return Err(Error::control_value(name, byte));
             }
             _ => index += 1,
         }
@@ -255,16 +254,25 @@ fn write_attachment(
 }
 
 /// A `Content-ID` must stay inside its angle brackets.
+///
+/// The check reads characters, not bytes: `<`, `>`, NUL, any control character
+/// and any whitespace would end the `msg-id` before its closing bracket, so the
+/// rendered field would no longer parse back to the same value. The reported
+/// byte is the first byte of the rejected character's UTF-8 encoding, which is
+/// the character itself for everything below `0x80`.
 fn checked_content_id(raw: &str) -> Result<String> {
     let id = cid::normalise(raw);
     if id.is_empty() {
         return Err(Error::EmptyHeader("Content-ID"));
     }
-    if id
-        .chars()
-        .any(|ch| matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace())
-    {
-        return Err(Error::ControlCharacter("Content-ID".to_string()));
+    let hostile = id
+        .char_indices()
+        .find(|(_, ch)| matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace());
+    if let Some((offset, _)) = hostile {
+        // `offset` is a char boundary of `id`, so that byte exists; `unwrap_or`
+        // keeps the function panic-free, and it has nothing to fall back to.
+        let byte = id.as_bytes().get(offset).copied().unwrap_or_default();
+        return Err(Error::control_value("Content-ID", byte));
     }
     Ok(id.to_string())
 }

@@ -537,12 +537,8 @@ fn parse_header_block(block: &str, limits: &Limits, part: usize) -> Result<Heade
     };
     for (name, value) in raw {
         let header = Header::from_wire(name, value)?;
-        if header
-            .value()
-            .bytes()
-            .any(|byte| (byte < 0x20 && byte != b'\t') || byte == 0x7F)
-        {
-            return Err(Error::ControlCharacter(header.name().to_string()));
+        if let Some(byte) = crate::header::forbidden_value_byte(header.value()) {
+            return Err(Error::control_value(header.name(), byte));
         }
         headers.entries.push(header);
     }

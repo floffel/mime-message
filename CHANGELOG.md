@@ -124,6 +124,29 @@ manifest disagree.
 
 ### Fixed
 
+- **A `ControlCharacter` rejection says which field and which byte, not just a name.**
+  The variant was `ControlCharacter(String)` and every construction site passed the header *name*
+  while the documentation described a rejected *value*, so the message said "header X-A
+  contains a control character" when `X-A` was fine and its value was not. Worse, the byte
+  that failed the check was thrown away: NUL, VT, FF, DEL and a bare CR from a broken fold
+  all produced the same payload, so no caller — and no test — could tell which one fired, or
+  reproduce the rejection from the error. It is now
+  `ControlCharacter { name, byte }`, filled through one internal constructor by all five
+  checks (the `Header::new` / `Header::from_wire` value and fold checks, the parser's
+  post-unfold check, the renderer's fold check and its `Content-ID` check), and it renders as
+  `value of header "Subject" contains control byte 0x0b`. `byte` is the byte the check
+  rejected; the `Content-ID` check reads characters rather than bytes and rejects `<`, `>`
+  and whitespace as well, so for a non-ASCII character it reports the first byte of that
+  character's UTF-8 encoding — the byte that identifies it in the input. Pinned by
+  `tests/control_character.rs`: all eight common control bytes reported as themselves (NUL,
+  BS, LF, VT, FF, CR, US, DEL), the boundary pairs of the rule (`0x1f` versus SP, tab versus
+  VT, `0x7e` versus DEL, raw UTF-8 accepted), a CR that is not a fold reported as `0x0d`, the
+  renderer's `Content-ID` path, and the rendered message; plus the proptest
+  `header_new_reports_the_exact_byte`, which walks every byte below `0x80` and fails if the
+  payload carries anything but the byte that was rejected. A caller that matched
+  `Error::ControlCharacter(_)` needs the new shape; that is part of the `0.4.0` batch below,
+  not a patch.
+
 - **A PEM key that fails to decode now reports a typed cause instead of a sentence.**
   `SigningKey::from_pem` turned the PKCS#1 and PKCS#8 parser errors into
   `Error::InvalidKey(String)` via `format!`, so `Error::source()` was always `None` and
