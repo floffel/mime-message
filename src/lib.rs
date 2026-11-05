@@ -687,7 +687,7 @@ impl Message {
     ///     .to("b@example.com")?
     ///     .body("hi")
     ///     .build()?;
-    /// let signed = message.sign(&key, &SignParams::new("example.com", "sel"))?;
+    /// let signed = message.sign(&key, &SignParams::new("example.com", "sel")?)?;
     /// assert!(String::from_utf8_lossy(&signed).contains("a=ed25519-sha256"));
     /// # Ok::<(), mime_message::Error>(())
     /// ```

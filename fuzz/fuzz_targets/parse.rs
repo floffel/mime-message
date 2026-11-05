@@ -86,10 +86,11 @@ fuzz_target!(|data: &[u8]| {
     // signing input is built from arbitrary headers and must not panic either.
     if let Ok(message) = Message::parse(&lossy) {
         let key = mime_message::dkim::SigningKey::from_ed25519_seed(&[0u8; 32]);
-        let params = mime_message::dkim::SignParams::new("example.com", "fuzz");
-        if let Ok(signed) = message.sign(&key, &params) {
-            if let Ok(text) = std::str::from_utf8(&signed) {
-                let _ = mime_message::dkim::verify(text, &key.verifying_key());
+        if let Ok(params) = mime_message::dkim::SignParams::new("example.com", "fuzz") {
+            if let Ok(signed) = message.sign(&key, &params) {
+                if let Ok(text) = std::str::from_utf8(&signed) {
+                    let _ = mime_message::dkim::verify(text, &key.verifying_key());
+                }
             }
         }
     }

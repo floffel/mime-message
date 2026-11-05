@@ -21,7 +21,7 @@
 //!
 //! # fn main() -> Result<(), mime_message::Error> {
 //! let key = dkim::SigningKey::from_ed25519_seed(&[7u8; 32]);
-//! let params = dkim::SignParams::new("example.com", "sel");
+//! let params = dkim::SignParams::new("example.com", "sel")?;
 //! let message = Message::builder()
 //!     .from("a@example.com")?
 //!     .to("b@example.com")?
@@ -646,12 +646,13 @@ impl VerifyingKey {
 /// ```
 /// use mime_message::dkim::{Canonicalization, SignParams};
 ///
-/// let params = SignParams::new("example.com", "mail")
+/// let params = SignParams::new("example.com", "mail")?
 ///     .canonicalization(Canonicalization::Relaxed, Canonicalization::Relaxed)
-///     .identity("@example.com")
+///     .identity("@example.com")?
 ///     .timestamp(1_700_000_000);
 /// assert_eq!(params.domain, "example.com");
 /// assert_eq!(params.selector, "mail");
+/// # Ok::<(), mime_message::Error>(())
 /// ```
 ///
 /// The timestamp is caller supplied on purpose: this crate never reads the
@@ -689,30 +690,41 @@ impl SignParams {
     /// ```
     /// use mime_message::dkim::SignParams;
     ///
-    /// let params = SignParams::new("example.com", "sel");
+    /// let params = SignParams::new("example.com", "sel")?;
     /// assert_eq!(params.selector, "sel");
     /// assert!(params.timestamp.is_none());
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
-    #[must_use]
-    pub fn new(domain: impl Into<String>, selector: impl Into<String>) -> Self {
-        Self {
-            domain: domain.into(),
-            selector: selector.into(),
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeaderInjection`] when the domain or selector contains CR, LF,
+    /// NUL, a semicolon, or another control character. [`Error::EmptyHeader`]
+    /// when either is empty.
+    pub fn new(domain: impl Into<String>, selector: impl Into<String>) -> Result<Self> {
+        let domain = domain.into();
+        let selector = selector.into();
+        validate_signing_value(DKIM_DOMAIN, &domain)?;
+        validate_signing_value(DKIM_SELECTOR, &selector)?;
+        Ok(Self {
+            domain,
+            selector,
             identity: None,
             header_canonicalization: Canonicalization::Relaxed,
             body_canonicalization: Canonicalization::Relaxed,
             timestamp: None,
             signed_headers: None,
-        }
+        })
     }
 
     /// Sets both canonicalizations.
     ///
     /// ```
     /// # use mime_message::dkim::{Canonicalization, SignParams};
-    /// let params = SignParams::new("example.com", "sel")
+    /// let params = SignParams::new("example.com", "sel")?
     ///     .canonicalization(Canonicalization::Simple, Canonicalization::Relaxed);
     /// assert_eq!(params.header_canonicalization, Canonicalization::Simple);
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
     #[must_use]
     pub fn canonicalization(mut self, header: Canonicalization, body: Canonicalization) -> Self {
@@ -725,21 +737,29 @@ impl SignParams {
     ///
     /// ```
     /// # use mime_message::dkim::SignParams;
-    /// let params = SignParams::new("example.com", "sel").identity("@example.com");
+    /// let params = SignParams::new("example.com", "sel")?.identity("@example.com")?;
     /// assert_eq!(params.identity.as_deref(), Some("@example.com"));
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
-    #[must_use]
-    pub fn identity(mut self, identity: impl Into<String>) -> Self {
-        self.identity = Some(identity.into());
-        self
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeaderInjection`] when the identity contains CR, LF, NUL, a
+    /// semicolon, or another control character.
+    pub fn identity(mut self, identity: impl Into<String>) -> Result<Self> {
+        let identity = identity.into();
+        validate_identity(&identity)?;
+        self.identity = Some(identity);
+        Ok(self)
     }
 
     /// Sets the `t=` timestamp (Unix seconds), keeping rendering deterministic.
     ///
     /// ```
     /// # use mime_message::dkim::SignParams;
-    /// let params = SignParams::new("example.com", "sel").timestamp(0);
+    /// let params = SignParams::new("example.com", "sel")?.timestamp(0);
     /// assert_eq!(params.timestamp, Some(0));
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
     #[must_use]
     pub fn timestamp(mut self, seconds: u64) -> Self {
@@ -753,19 +773,88 @@ impl SignParams {
     ///
     /// ```
     /// # use mime_message::dkim::SignParams;
-    /// let params = SignParams::new("example.com", "sel")
-    ///     .signed_headers(["Subject"]);
+    /// let params = SignParams::new("example.com", "sel")?
+    ///     .signed_headers(["Subject"])?;
     /// assert_eq!(params.signed_headers.as_deref(), Some(&["Subject".to_string()][..]));
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
-    #[must_use]
-    pub fn signed_headers<I, S>(mut self, names: I) -> Self
+    ///
+    /// # Errors
+    ///
+    /// [`Error::HeaderInjection`] when a name is empty or contains anything
+    /// outside RFC 5322 `tchar`, including CR, LF, NUL or `:`.
+    pub fn signed_headers<I, S>(mut self, names: I) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.signed_headers = Some(names.into_iter().map(Into::into).collect());
-        self
+        let names = names.into_iter().map(Into::into).collect::<Vec<_>>();
+        for name in &names {
+            validate_signed_header(name)?;
+        }
+        self.signed_headers = Some(names);
+        Ok(self)
     }
+}
+
+/// A `DKIM-Signature` value that carries caller data.
+const DKIM_DOMAIN: &str = "DKIM domain";
+/// A `DKIM-Signature` selector that carries caller data.
+const DKIM_SELECTOR: &str = "DKIM selector";
+/// A `DKIM-Signature` identity that carries caller data.
+const DKIM_IDENTITY: &str = "DKIM identity";
+/// A `DKIM-Signature` signed-header name that carries caller data.
+const DKIM_SIGNED_HEADER: &str = "DKIM signed header";
+
+/// Rejects a DKIM tag value that could terminate the signature header early.
+fn validate_signing_value(what: &'static str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(Error::EmptyHeader(what));
+    }
+    if has_dkim_value_metacharacter(value) {
+        return Err(Error::HeaderInjection(what));
+    }
+    Ok(())
+}
+
+/// Rejects an identity tag value that could terminate the signature header early.
+fn validate_identity(value: &str) -> Result<()> {
+    if has_dkim_value_metacharacter(value) {
+        return Err(Error::HeaderInjection(DKIM_IDENTITY));
+    }
+    Ok(())
+}
+
+/// Rejects an `h=` name that cannot be safely joined with `:` or folded.
+fn validate_signed_header(name: &str) -> Result<()> {
+    if has_dkim_value_metacharacter(name) {
+        return Err(Error::HeaderInjection(DKIM_SIGNED_HEADER));
+    }
+    let name = name.trim();
+    if name.is_empty() || !name.bytes().all(crate::is_tchar) {
+        return Err(Error::HeaderInjection(DKIM_SIGNED_HEADER));
+    }
+    Ok(())
+}
+
+fn has_dkim_value_metacharacter(value: &str) -> bool {
+    value
+        .chars()
+        .any(|ch| matches!(ch, '\r' | '\n' | '\0' | ';') || ch.is_control())
+}
+
+fn validate_sign_params(params: &SignParams) -> Result<()> {
+    validate_signing_value(DKIM_DOMAIN, &params.domain)?;
+    validate_signing_value(DKIM_SELECTOR, &params.selector)?;
+    if let Some(identity) = &params.identity {
+        validate_identity(identity)?;
+    }
+    if let Some(signed_headers) = &params.signed_headers {
+        for name in signed_headers {
+            validate_signed_header(name)?;
+        }
+    }
+    Ok(())
 }
 
 /// A parsed `DKIM-Signature` header field.
@@ -935,7 +1024,7 @@ impl SignatureHeader {
 ///     .to("b@example.com")?
 ///     .body("hi")
 ///     .build()?
-///     .sign(&key, &SignParams::new("example.com", "sel"))?;
+///     .sign(&key, &SignParams::new("example.com", "sel")?)?;
 /// assert!(String::from_utf8_lossy(&signed).starts_with("DKIM-Signature: "));
 /// # Ok::<(), mime_message::Error>(())
 /// ```
@@ -945,6 +1034,7 @@ impl SignatureHeader {
 /// [`Error::HeaderInjection`] and friends from rendering, and
 /// [`Error::InvalidSignature`] when the message has no `From` to sign.
 pub fn sign(message: &Message, key: &SigningKey, params: &SignParams) -> Result<Vec<u8>> {
+    validate_sign_params(params)?;
     let rendered = message.render()?;
     let rendered = String::from_utf8(rendered)
         .map_err(|_| Error::InvalidSignature("rendered message is not UTF-8".to_string()))?;
@@ -1026,7 +1116,7 @@ pub fn sign(message: &Message, key: &SigningKey, params: &SignParams) -> Result<
 ///     .to("b@example.com")?
 ///     .body("hi")
 ///     .build()?
-///     .sign(&key, &SignParams::new("example.com", "sel"))?;
+///     .sign(&key, &SignParams::new("example.com", "sel")?)?;
 /// let raw = String::from_utf8_lossy(&signed);
 /// let verified = dkim::verify(&raw, &key.verifying_key())?;
 /// assert_eq!(verified.domain, "example.com");

@@ -58,6 +58,12 @@ manifest disagree.
 
 ### Changed
 
+- **Breaking (the next release is `0.4.0`): `SignParams` validates caller-supplied DKIM tags.**
+  `SignParams::new`, `identity` and `signed_headers` now return `Result`, rejecting empty domain/selector, CR, LF, NUL,
+  semicolons in tag values, and `:` or other non-`tchar` bytes in signed-header names with `Error::HeaderInjection` or
+  `Error::EmptyHeader`. `sign()` re-checks the public fields before rendering, so mutating a `SignParams` cannot bypass
+  the guard.
+
 - **`Header` has bounded constructors for untrusted names, values and raw wire
   values.** `Header::new_with_limits` and `Header::from_wire_with_limits` take
   `&str` plus `Limits` and reject either input against
