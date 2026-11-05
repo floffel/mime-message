@@ -9,8 +9,9 @@
 //! ```
 //! use mime_message::{cid, Attachment};
 //!
+//! # fn main() -> Result<(), mime_message::Error> {
 //! let logo = Attachment::new("logo.png", "image/png", b"PNG".to_vec())
-//!     .with_content_id("<logo@example.com>");
+//!     .with_content_id("<logo@example.com>")?;
 //! assert_eq!(logo.content_id.as_deref(), Some("logo@example.com"));
 //!
 //! let html = cid::rewrite("<img src=\"cid:logo@example.com\">", |reference| {
@@ -18,6 +19,8 @@
 //!         .then(|| cid::data_uri(&logo.content_type, &logo.data))
 //! });
 //! assert!(html.starts_with("<img src=\"data:image/png;base64,"));
+//! # Ok(())
+//! # }
 //! ```
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -46,6 +49,38 @@ pub fn normalise(reference: &str) -> &str {
         text = text[4..].trim();
     }
     text.trim_matches(|ch| ch == '<' || ch == '>').trim()
+}
+
+/// Validates and normalises a `Content-ID`.
+///
+/// The parser drops empty `Content-ID` fields, and the renderer rejects any
+/// value that would not survive its angle brackets; construction uses the same
+/// rule so a `cid:` part cannot count as inline and then fail at delivery time.
+pub(crate) fn checked_content_id(raw: &str) -> Result<String> {
+    let id = normalise(raw);
+    if id.is_empty() {
+        return Err(Error::EmptyHeader("Content-ID"));
+    }
+    let hostile = id.chars().find(|ch| is_hostile_id_char(*ch));
+    match hostile {
+        // `encode_utf8` always writes at least one byte, so the first slot of
+        // the buffer is the leading byte of the character: nothing is guessed
+        // and no byte of the input is invented.
+        Some(ch) => {
+            let mut encoded = [0_u8; 4];
+            ch.encode_utf8(&mut encoded);
+            Err(Error::control_value("Content-ID", encoded[0]))
+        }
+        None => Ok(id.to_string()),
+    }
+}
+
+/// True for a character that would end a `Content-ID` before its closing `>`.
+///
+/// `<` and `>` would swallow the bracket that closes the `msg-id`, and NUL, a
+/// control character or any whitespace would end the field there.
+fn is_hostile_id_char(ch: char) -> bool {
+    matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace()
 }
 
 /// Builds a `data:` URI for one part.

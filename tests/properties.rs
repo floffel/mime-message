@@ -146,7 +146,9 @@ fn message() -> impl Strategy<Value = Message> {
                 for (name, content_type, data, content_id) in attachments {
                     let mut attachment = Attachment::new(name, content_type, data);
                     if let Some(id) = content_id {
-                        attachment = attachment.with_content_id(id);
+                        attachment = attachment
+                            .with_content_id(id)
+                            .expect("generated content id");
                     }
                     builder = builder.attachment(attachment);
                 }

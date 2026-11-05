@@ -129,6 +129,43 @@ fn an_empty_content_id_is_not_recorded() {
     assert!(message.attachments[0].content_id.is_none());
 }
 
+#[test]
+fn with_content_id_rejects_empty_ids_before_inline_counting() {
+    for id in ["", " ", "<>", "cid:<>", "CID: <  > "] {
+        assert_eq!(
+            Attachment::new("logo.png", "image/png", vec![1])
+                .with_content_id(id)
+                .unwrap_err(),
+            Error::EmptyHeader("Content-ID"),
+            "{id:?} must be rejected at construction"
+        );
+    }
+}
+
+#[test]
+fn with_content_id_accepts_valid_ids_that_inline_parts_count() {
+    let message = Message::builder()
+        .from("a@example.com")
+        .expect("from")
+        .to("b@example.com")
+        .expect("to")
+        .body("hi")
+        .html_body("<img src=\"cid:logo@example.com\">")
+        .attachment(
+            Attachment::new("logo.png", "image/png", vec![1])
+                .with_content_id("<logo@example.com>")
+                .expect("valid content id"),
+        )
+        .build()
+        .expect("build");
+
+    assert_eq!(message.inline_parts().count(), 1);
+    assert!(message
+        .part_by_content_id("cid:<logo@example.com>")
+        .is_some());
+    assert!(message.render().is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // Rewriting
 // ---------------------------------------------------------------------------
@@ -212,7 +249,8 @@ fn inline_parts_render_as_multipart_related() {
         .html_body("<p>Grüße <img src=\"cid:logo\"></p>")
         .attachment(
             Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
-                .with_content_id("<logo@example.com>"),
+                .with_content_id("<logo@example.com>")
+                .expect("valid content id"),
         )
         .build()
         .expect("build");
@@ -239,7 +277,11 @@ fn a_mixed_message_with_inline_and_plain_parts_stays_mixed() {
         .expect("to")
         .body("hi")
         .html_body("<img src=\"cid:logo\">")
-        .attachment(Attachment::new("logo.png", "image/png", vec![1]).with_content_id("logo"))
+        .attachment(
+            Attachment::new("logo.png", "image/png", vec![1])
+                .with_content_id("logo")
+                .expect("valid content id"),
+        )
         .attachment(Attachment::new("report.pdf", "application/pdf", vec![2]))
         .build()
         .expect("build");
@@ -259,7 +301,11 @@ fn a_message_without_html_never_becomes_related() {
         .to("b@example.com")
         .expect("to")
         .body("hi")
-        .attachment(Attachment::new("logo.png", "image/png", vec![1]).with_content_id("logo"))
+        .attachment(
+            Attachment::new("logo.png", "image/png", vec![1])
+                .with_content_id("logo")
+                .expect("valid content id"),
+        )
         .build()
         .expect("build");
     let rendered = raw_of(&message);
@@ -274,7 +320,11 @@ fn a_content_id_cannot_inject_a_header() {
         .to("b@example.com")
         .expect("to")
         .body("hi")
-        .attachment(Attachment::new("a.png", "image/png", vec![1]).with_content_id("a"))
+        .attachment(
+            Attachment::new("a.png", "image/png", vec![1])
+                .with_content_id("a")
+                .expect("valid content id"),
+        )
         .build()
         .expect("build");
     let mut broken = message.clone();
@@ -305,7 +355,11 @@ fn rendering_inline_parts_is_deterministic() {
             .expect("to")
             .body("hi")
             .html_body("<img src=\"cid:logo\">")
-            .attachment(Attachment::new("logo.png", "image/png", vec![9]).with_content_id("logo"))
+            .attachment(
+                Attachment::new("logo.png", "image/png", vec![9])
+                    .with_content_id("logo")
+                    .expect("valid content id"),
+            )
             .build()
             .expect("build")
     };

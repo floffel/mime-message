@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .attachment(
             Attachment::new("logo.png", "image/png", LOGO.to_vec())
-                .with_content_id("logo@example.com"),
+                .with_content_id("logo@example.com")?,
         )
         .attachment(Attachment::new(
             "rechnung.pdf",
