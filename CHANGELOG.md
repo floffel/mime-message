@@ -191,6 +191,15 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **`Header::new` trims only ASCII SP/HTAB, and `Header` equality follows `is()`.**
+  `Header::new` used Rust's Unicode-aware `trim`, so `"\u{a0}Rechnung"` lost its
+  leading no-break space before it ever reached a caller. The constructor and
+  unfolding path now trim only space and tab, preserving other Unicode
+  whitespace. `Header`'s derived `PartialEq`/`Eq`/`Hash` also compared original
+  name casing and raw spacing, so `Header::new("x-a", "  y  ")` did not equal the
+  same field parsed with `from_wire`. Equality and hashing now use the field
+  identity `is()` defines: ASCII-case-insensitive name plus unfolded value.
+  Pinned by the header unit tests and `tests/headers.rs`.
 - **`Attachment::with_content_id` rejects empty `Content-ID`s at construction.**
   The setter used to store `Some("")` for `""`, `"<>"` or `"cid:<>"` while the
   parser dropped empty IDs and the renderer rejected them later, so

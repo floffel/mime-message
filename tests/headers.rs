@@ -2,6 +2,7 @@
 //! `Bcc` has a field of its own instead of being dropped.
 
 use mime_message::{parse, Error, Header, Message};
+use std::collections::HashSet;
 
 fn raw_of(message: &Message) -> String {
     String::from_utf8(message.render().expect("render")).expect("utf-8")
@@ -58,6 +59,31 @@ fn unknown_headers_are_rerendered_byte_for_byte() {
     assert_eq!(message.header("X-Empty"), Some(""));
     assert_eq!(message.header("X-8bit"), Some("Grüße"));
     assert_eq!(message.header("X-Trailing"), Some("value"));
+}
+
+#[test]
+fn header_identity_matches_is_across_constructors_and_raw_spacing() {
+    let built = Header::new("x-a", "  y  ").expect("built");
+    let parsed = Header::from_wire("X-A", "  y  ").expect("parsed");
+
+    assert_eq!(built.name(), "x-a");
+    assert_eq!(parsed.name(), "X-A");
+    assert_ne!(built.raw_value(), parsed.raw_value());
+    assert!(built.is(parsed.name()));
+    assert_eq!(built, parsed);
+    assert_eq!(built, Header::new("X-A", "y").expect("normalised"));
+
+    let mut seen = HashSet::new();
+    seen.insert(built);
+    seen.insert(parsed);
+    assert_eq!(seen.len(), 1);
+}
+
+#[test]
+fn header_new_preserves_unicode_whitespace_other_than_space_and_tab() {
+    let header = Header::new("Subject", "\u{a0}Rechnung").expect("header");
+    assert_eq!(header.value(), "\u{a0}Rechnung");
+    assert_eq!(header.raw_value(), " \u{a0}Rechnung");
 }
 
 #[test]
