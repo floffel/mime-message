@@ -151,7 +151,9 @@ fn message() -> impl Strategy<Value = Message> {
                     builder = builder.attachment(attachment);
                 }
                 for header in headers {
-                    builder = builder.header(header);
+                    builder = builder
+                        .header(header)
+                        .expect("generated header is preserved");
                 }
                 builder.build().expect("generated message builds")
             },
@@ -707,9 +709,11 @@ mod dkim_properties {
         ) {
             let key = SigningKey::from_ed25519_seed(&[71u8; 32]);
             let mut message = message_with("body".to_string());
-            message.push_header(
-                mime_message::Header::new("X-Note", value.clone()).expect("header"),
-            );
+            message
+                .push_header(
+                    mime_message::Header::new("X-Note", value.clone()).expect("header"),
+                )
+                .expect("push");
             let signed = message
                 .sign(&key, &SignParams::new("example.com", "sel"))
                 .expect("sign");

@@ -101,6 +101,18 @@ pub(crate) fn truncate(text: &str, max: usize) -> String {
     text[..cut].to_string()
 }
 
+/// Rejects a preserved header name that [`Message`] models with a typed field.
+///
+/// One check serves the mutation APIs and the renderer: a modelled name must
+/// never enter the preserved-header list, and the renderer keeps the same
+/// guard as a defence in depth for any `Message` built within the crate.
+pub(crate) fn ensure_not_modelled(header: &Header) -> Result<()> {
+    if MODELLED_HEADERS.iter().any(|name| header.is(name)) {
+        return Err(Error::DuplicateHeader(header.name().to_string()));
+    }
+    Ok(())
+}
+
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
 ///
 /// The struct is deliberately **not** `#[non_exhaustive]`: a mailbox is the
@@ -442,38 +454,57 @@ impl Message {
 
     /// Appends a header field; duplicates of the same name are kept.
     ///
+    /// Only fields the crate does not model are accepted. A modelled name
+    /// (`From`, `To`, `Subject`, `Content-Type`, …) is rejected with
+    /// [`Error::DuplicateHeader`] instead of being stored in the preserved
+    /// list and failing later during [`Message::render`].
+    ///
     /// ```rust
     /// use mime_message::{Header, Message};
     ///
     /// let mut message = Message::parse("From: a@example.com\r\n\r\nhi")?;
-    /// message.push_header(Header::new("X-Trace", "abc")?);
+    /// message.push_header(Header::new("X-Trace", "abc")?)?;
     /// let bytes = message.render()?;
     /// let raw = String::from_utf8_lossy(&bytes);
     /// assert!(raw.contains("X-Trace: abc\r\n"));
     /// # Ok::<(), mime_message::Error>(())
     /// ```
-    pub fn push_header(&mut self, header: Header) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DuplicateHeader`] when `header` names a field [`Message`]
+    /// models.
+    pub fn push_header(&mut self, header: Header) -> Result<()> {
+        ensure_not_modelled(&header)?;
         self.headers.push(header);
+        Ok(())
     }
 
     /// Replaces every preserved header called like `header`, in place.
     ///
     /// When no such header exists it is appended. The first old entry keeps its
-    /// position, later duplicates are dropped.
+    /// position, later duplicates are dropped. Only fields the crate does not
+    /// model are accepted; a modelled name is rejected before the list changes.
     ///
     /// ```rust
     /// use mime_message::{Header, Message};
     ///
     /// let mut message = Message::parse("From: a@example.com\r\nX-A: 1\r\n\r\nhi")?;
-    /// message.set_header(Header::new("X-A", "2")?);
+    /// message.set_header(Header::new("X-A", "2")?)?;
     /// assert_eq!(message.header("X-A"), Some("2"));
     /// # Ok::<(), mime_message::Error>(())
     /// ```
-    pub fn set_header(&mut self, header: Header) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DuplicateHeader`] when `header` names a field [`Message`]
+    /// models.
+    pub fn set_header(&mut self, header: Header) -> Result<()> {
+        ensure_not_modelled(&header)?;
         let name = header.name().to_string();
         let Some(first) = self.headers.iter().position(|old| old.is(&name)) else {
             self.headers.push(header);
-            return;
+            return Ok(());
         };
         self.headers[first] = header;
         let mut index = first + 1;
@@ -484,6 +515,7 @@ impl Message {
                 index += 1;
             }
         }
+        Ok(())
     }
 
     /// Removes the first preserved header called `name` and returns it.
@@ -739,21 +771,26 @@ impl MessageBuilder {
 
     /// Appends a header field the crate does not model.
     ///
+    /// # Errors
+    ///
+    /// [`Error::DuplicateHeader`] when `header` names a field [`Message`]
+    /// models.
+    ///
     /// ```rust
     /// use mime_message::{Header, Message};
     ///
     /// let message = Message::builder()
     ///     .from("a@example.com")?
     ///     .to("b@example.com")?
-    ///     .header(Header::new("Reply-To", "replies@example.com")?)
+    ///     .header(Header::new("Reply-To", "replies@example.com")?)?
     ///     .build()?;
     /// assert_eq!(message.header("reply-to"), Some("replies@example.com"));
     /// # Ok::<(), mime_message::Error>(())
     /// ```
-    #[must_use]
-    pub fn header(mut self, header: Header) -> Self {
+    pub fn header(mut self, header: Header) -> Result<Self> {
+        ensure_not_modelled(&header)?;
         self.headers.push(header);
-        self
+        Ok(self)
     }
 
     /// Sets the subject.

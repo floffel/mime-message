@@ -177,6 +177,14 @@ manifest disagree.
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a
   replacement character. Only the part before the first `*` now selects the
   decoder, and `=?iso-8859-1*de?Q?Gr=FC=DFe?=` decodes to `Grüße` again.
+- **Modelled header names are rejected when preserved headers are mutated, not at render time.**
+  `Message::push_header`, `Message::set_header` and `MessageBuilder::header` now return a
+  `Result` and reject `From`, `To`, `Cc`, `Bcc`, `Subject`, `Date`, `Message-ID`,
+  `MIME-Version`, `Content-Type` and `Content-Transfer-Encoding` with
+  `Error::DuplicateHeader` before the header enters the preserved list. The renderer keeps
+  the same duplicate-name guard as defence in depth. Pinned by the header mutation tests
+  for modelled and non-modelled names and for the builder path.
+
 - **`ED25519 PRIVATE KEY` is no longer accepted as a key label.**
   Both private-key decoders this crate routes to (`ed25519-dalek` and `rsa`) require the
   standard PKCS#8 label `PRIVATE KEY`, so a block labelled `ED25519 PRIVATE KEY` could never
