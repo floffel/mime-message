@@ -462,7 +462,7 @@ impl Message {
     /// ```rust
     /// use mime_message::{Header, Message};
     ///
-    /// let mut message = Message::parse("From: a@example.com\r\n\r\nhi")?;
+    /// let mut message = Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nhi")?;
     /// message.push_header(Header::new("X-Trace", "abc")?)?;
     /// let bytes = message.render()?;
     /// let raw = String::from_utf8_lossy(&bytes);
@@ -642,6 +642,13 @@ fn escape_html_attribute(value: &str) -> String {
         }
     }
     out
+}
+
+pub(crate) fn check_recipients(message: &Message) -> Result<()> {
+    if message.to.is_empty() && message.cc.is_empty() && message.bcc.is_empty() {
+        return Err(Error::NoRecipients);
+    }
+    Ok(())
 }
 
 #[cfg(feature = "dkim")]
@@ -911,6 +918,12 @@ impl MessageBuilder {
     ///     Message::builder().from("a@example.com")?.build().unwrap_err(),
     ///     Error::NoRecipients
     /// );
+    /// // A carbon copy counts as a recipient, too.
+    /// let cc_only = Message::builder()
+    ///     .from("a@example.com")?
+    ///     .cc("c@example.com")?
+    ///     .build()?;
+    /// assert!(cc_only.to.is_empty());
     /// // A blind copy counts as a recipient …
     /// let bcc_only = Message::builder()
     ///     .from("a@example.com")?
@@ -923,17 +936,14 @@ impl MessageBuilder {
     /// # Errors
     ///
     /// Fails when `From:` is missing, a mailbox address is malformed, or there is
-    /// neither a `To:` nor a `Bcc:` recipient.
+    /// no `To:`, `Cc:` or `Bcc:` recipient.
     pub fn build(self) -> Result<Message> {
         let from = self.from.ok_or(Error::EmptyHeader("From"))?;
         parse::validate_address(&from.address)?;
         for mailbox in self.to.iter().chain(&self.cc).chain(&self.bcc) {
             parse::validate_address(&mailbox.address)?;
         }
-        if self.to.is_empty() && self.bcc.is_empty() {
-            return Err(Error::NoRecipients);
-        }
-        Ok(Message {
+        let message = Message {
             from,
             to: self.to,
             cc: self.cc,
@@ -945,6 +955,8 @@ impl MessageBuilder {
             message_id: self.message_id,
             attachments: self.attachments,
             headers: self.headers,
-        })
+        };
+        check_recipients(&message)?;
+        Ok(message)
     }
 }

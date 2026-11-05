@@ -40,7 +40,7 @@ fn unknown_headers_are_rerendered_byte_for_byte() {
         "X-Url: https://example.com:8443/path\r\n",
         "X-Trailing: value   \r\n",
     );
-    let raw = format!("From: a@example.com\r\n{block}\r\nhi");
+    let raw = format!("From: a@example.com\r\nTo: b@example.com\r\n{block}\r\nhi");
     let message = parse(&raw).expect("parse");
     let rendered = raw_of(&message);
     for line in block.split_inclusive("\r\n") {
@@ -64,6 +64,7 @@ fn unknown_headers_are_rerendered_byte_for_byte() {
 fn duplicate_unknown_headers_are_all_kept() {
     let raw = concat!(
         "From: a@example.com\r\n",
+        "To: b@example.com\r\n",
         "X-Trace: one\r\n",
         "X-Other: x\r\n",
         "X-Trace: two\r\n",
@@ -88,6 +89,7 @@ fn duplicate_unknown_headers_are_all_kept() {
 fn modelled_headers_are_not_preserved_a_second_time() {
     let raw = concat!(
         "From: a@example.com\r\n",
+        "To: b@example.com\r\n",
         "Subject: hi\r\n",
         "MIME-Version: 1.0\r\n",
         "Content-Type: text/plain; charset=utf-8\r\n",
@@ -104,7 +106,7 @@ fn modelled_headers_are_not_preserved_a_second_time() {
 
 #[test]
 fn a_duplicate_subject_is_not_resurrected_as_an_unknown_header() {
-    let raw = "From: a@example.com\r\nSubject: one\r\nSubject: two\r\n\r\nx";
+    let raw = "From: a@example.com\r\nTo: b@example.com\r\nSubject: one\r\nSubject: two\r\n\r\nx";
     let message = parse(raw).expect("parse");
     assert_eq!(message.subject, "one");
     assert_eq!(message.headers().len(), 0);
@@ -269,6 +271,7 @@ fn from_wire_rejects_folds_that_end_the_header_block() {
 fn render_parse_render_keeps_the_header_set() {
     let raw = concat!(
         "From: a@example.com\r\n",
+        "To: b@example.com\r\n",
         "Subject: hi\r\n",
         "X-Folded: one\r\n",
         "\ttwo\r\n",
@@ -348,7 +351,7 @@ fn duplicate_bcc_headers_are_joined_like_to() {
 }
 
 #[test]
-fn without_to_and_bcc_the_builder_has_no_recipient() {
+fn without_to_cc_and_bcc_the_builder_has_no_recipient() {
     assert_eq!(
         Message::builder()
             .from("a@example.com")
@@ -384,7 +387,7 @@ fn render_parse_render_is_stable_with_preserved_headers() {
 
 #[test]
 fn preserved_headers_from_an_8bit_message_survive() {
-    let raw = "From: a@example.com\r\nX-Origin: München\r\n\r\nx";
+    let raw = "From: a@example.com\r\nTo: b@example.com\r\nX-Origin: München\r\n\r\nx";
     let message = parse(raw).expect("parse");
     let rendered = raw_of(&message);
     assert!(rendered.contains("X-Origin: München\r\n"));

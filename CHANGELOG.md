@@ -185,6 +185,10 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
+  `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
+  messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with
+  `Error::NoRecipients`, as the `render` docs promise.
 - **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
   label such as `iso-8859-1*de` was handed to the charset registry whole, where
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a

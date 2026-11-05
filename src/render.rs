@@ -7,7 +7,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::error::{Error, Result};
-use crate::{cid, ensure_not_modelled, is_tchar, Mailbox, Message};
+use crate::{check_recipients, cid, ensure_not_modelled, is_tchar, Mailbox, Message};
 
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
@@ -17,6 +17,7 @@ const MAX_BODY_LINE: usize = 998;
 
 /// Renders `message` into RFC 5322 bytes.
 pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
+    check_recipients(message)?;
     let mut out = String::new();
 
     push_header(&mut out, "From", &render_mailbox(&message.from)?, true)?;
@@ -437,7 +438,8 @@ mod tests {
 
     #[test]
     fn render_still_rejects_a_modelled_preserved_header() {
-        let mut message = Message::parse("From: a@example.com\r\n\r\nx").expect("parse");
+        let mut message =
+            Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nx").expect("parse");
         let header = Header::new("Subject", "spoofed").expect("header");
         // Bypass the mutation API: this is the renderer's own guard.
         message.headers.push(header);
