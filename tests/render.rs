@@ -169,6 +169,39 @@ fn message_without_recipient_is_rejected() {
 }
 
 #[test]
+fn cc_only_message_builds_and_renders() {
+    let message = Message::builder()
+        .from("a@example.com")
+        .unwrap()
+        .cc("c@example.com")
+        .unwrap()
+        .subject("x")
+        .body("y")
+        .build()
+        .unwrap();
+
+    assert_eq!(message.to, Vec::new());
+    assert_eq!(message.cc[0].address, "c@example.com");
+
+    let text = String::from_utf8(message.render().unwrap()).unwrap();
+    assert!(text.contains("Cc: c@example.com\r\n"));
+    assert!(!text.contains("To:"));
+}
+
+#[test]
+fn parsed_and_mutated_recipientless_messages_fail_to_render() {
+    let parsed = Message::parse("From: a@example.com\r\nSubject: x\r\n\r\nbody")
+        .expect("parse recipientless message");
+    assert_eq!(parsed.render().unwrap_err(), Error::NoRecipients);
+
+    let mut mutated = simple();
+    mutated.to.clear();
+    mutated.cc.clear();
+    mutated.bcc.clear();
+    assert_eq!(mutated.render().unwrap_err(), Error::NoRecipients);
+}
+
+#[test]
 fn attachment_switches_to_multipart_with_base64() {
     let msg = simple().clone_with_attachment(Attachment::new(
         "rechnung.pdf",
