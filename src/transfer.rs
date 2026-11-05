@@ -142,6 +142,23 @@ const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
 /// (RFC 2045 §6.7 allows at most 76).
 pub const MAX_QUOTED_PRINTABLE_LINE: usize = 76;
 
+/// Worst-case output size for [`encode_quoted_printable`].
+///
+/// Every input byte can become a three-character `=XX` escape, and a soft line
+/// break adds another three characters after each full line of escapes. The
+/// content budget leaves one column for the soft break's `=`.
+fn quoted_printable_capacity(input_len: usize) -> usize {
+    const ESCAPE_WIDTH: usize = 3;
+    const SOFT_BREAK_WIDTH: usize = 3;
+    const MAX_ESCAPES_PER_LINE: usize = (MAX_QUOTED_PRINTABLE_LINE - 1) / ESCAPE_WIDTH;
+
+    let soft_breaks = input_len.saturating_sub(1) / MAX_ESCAPES_PER_LINE;
+    input_len
+        .saturating_mul(ESCAPE_WIDTH)
+        .saturating_add(soft_breaks.saturating_mul(SOFT_BREAK_WIDTH))
+        .saturating_add(8)
+}
+
 /// Encodes `input` as quoted-printable, the 7-bit-safe form of a body.
 ///
 /// The inverse of [`decode_quoted_printable`], with the rules from RFC 2045
@@ -171,7 +188,7 @@ pub const MAX_QUOTED_PRINTABLE_LINE: usize = 76;
 #[must_use]
 pub fn encode_quoted_printable(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity(bytes.len() + bytes.len() / 3 + 8);
+    let mut out = String::with_capacity(quoted_printable_capacity(bytes.len()));
     let mut column = 0usize;
     let mut index = 0usize;
 
@@ -338,5 +355,26 @@ mod tests {
     fn quoted_printable_keeps_utf8_bytes_intact() {
         let text = "üñî";
         assert_eq!(decode_quoted_printable(text), text.as_bytes());
+    }
+
+    #[test]
+    fn quoted_printable_capacity_covers_an_all_escaped_body() {
+        let input = "ä".repeat(100);
+        let encoded = encode_quoted_printable(&input);
+
+        assert_eq!(encoded.len(), 621);
+        assert_eq!(decode_quoted_printable(&encoded), input.as_bytes());
+        assert!(encoded.len() <= quoted_printable_capacity(input.len()));
+    }
+
+    #[test]
+    fn quoted_printable_capacity_matches_the_worst_case_escape_bound() {
+        for len in 0usize..=200 {
+            let soft_breaks = len.saturating_sub(1) / 25;
+            assert_eq!(
+                quoted_printable_capacity(len),
+                len * 3 + soft_breaks * 3 + 8
+            );
+        }
     }
 }
