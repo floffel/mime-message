@@ -125,9 +125,11 @@ pub(crate) fn ensure_safe_preserved_header(header: &Header) -> Result<()> {
 ///
 /// The struct is deliberately **not** `#[non_exhaustive]`: a mailbox is the
 /// complete RFC 5322 §3.4 shape — an optional display name and the address —
-/// so struct-literal construction is part of the API rather than a hazard.
-/// Parsed messages hand these out, and one built by hand can be passed to
-/// [`MessageBuilder::to`].
+/// so struct-literal construction remains available for round trips. New code
+/// can use [`Mailbox::new`] or [`std::str::FromStr`] for a validated value, and
+/// [`MessageBuilder::from_mailbox`] / [`MessageBuilder::to_mailbox`] /
+/// [`MessageBuilder::cc_mailbox`] / [`MessageBuilder::bcc_mailbox`] accept a
+/// parsed mailbox directly.
 ///
 /// ```
 /// use mime_message::Mailbox;
@@ -147,6 +149,40 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
+    /// Creates a mailbox from a display name and an address.
+    ///
+    /// Leading and trailing whitespace is removed from both parts. An empty
+    /// display name is stored as [`None`]. The address must pass the same
+    /// validation used by the parser and renderer, and the display name must
+    /// not contain a character that cannot be rendered in a header.
+    ///
+    /// ```
+    /// use mime_message::Mailbox;
+    ///
+    /// let mailbox = Mailbox::new(Some("Shop"), "shop@example.com")?;
+    /// assert_eq!(mailbox.name.as_deref(), Some("Shop"));
+    ///
+    /// let anonymous = Mailbox::new(None, "kunde@example.com")?;
+    /// assert_eq!(anonymous.name, None);
+    /// assert!(Mailbox::new(None, "not-an-address").is_err());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidMailbox`] when the address fails validation or
+    /// the display name contains CR, LF or another character the renderer
+    /// cannot safely write.
+    pub fn new(name: Option<&str>, address: impl Into<String>) -> Result<Self> {
+        let address = address.into();
+        let address = address.trim().to_string();
+        Self {
+            name: name.map(str::to_string),
+            address,
+        }
+        .validated()
+    }
+
     fn parse(raw: &str) -> Result<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -184,6 +220,37 @@ impl Mailbox {
             address: raw.to_string(),
         })
     }
+
+    fn validated(self) -> Result<Self> {
+        let name = normalise_display_name(self.name.as_deref())?;
+        parse::validate_address(&self.address)?;
+        Ok(Self {
+            name,
+            address: self.address,
+        })
+    }
+}
+
+impl std::str::FromStr for Mailbox {
+    type Err = Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        Self::parse(raw)?.validated()
+    }
+}
+
+fn normalise_display_name(name: Option<&str>) -> Result<Option<String>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if crate::header::has_forbidden_chars(name) {
+        return Err(Error::invalid_mailbox(name));
+    }
+    Ok(Some(name.to_string()))
 }
 
 /// One attachment with its raw bytes.
@@ -726,6 +793,29 @@ impl MessageBuilder {
         Ok(self)
     }
 
+    /// Sets `From:` from an already parsed [`Mailbox`].
+    ///
+    /// ```
+    /// use mime_message::{Mailbox, Message};
+    ///
+    /// let sender: Mailbox = "Shop <shop@example.com>".parse()?;
+    /// let message = Message::builder()
+    ///     .from_mailbox(sender)?
+    ///     .to("kunde@example.com")?
+    ///     .build()?;
+    /// assert_eq!(message.from.name.as_deref(), Some("Shop"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mailbox whose public fields were changed to an invalid address
+    /// or an unrenderable display name after construction.
+    pub fn from_mailbox(mut self, mailbox: Mailbox) -> Result<Self> {
+        self.from = Some(mailbox.validated()?);
+        Ok(self)
+    }
+
     /// Adds one `To:` recipient.
     ///
     /// ```
@@ -747,6 +837,29 @@ impl MessageBuilder {
         Ok(self)
     }
 
+    /// Adds one `To:` recipient from an already parsed [`Mailbox`].
+    ///
+    /// ```
+    /// use mime_message::{Mailbox, Message};
+    ///
+    /// let recipient = Mailbox::new(Some("Kunde"), "kunde@example.com")?;
+    /// let message = Message::builder()
+    ///     .from("shop@example.com")?
+    ///     .to_mailbox(recipient)?
+    ///     .build()?;
+    /// assert_eq!(message.to[0].name.as_deref(), Some("Kunde"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mailbox whose public fields were changed to an invalid address
+    /// or an unrenderable display name after construction.
+    pub fn to_mailbox(mut self, mailbox: Mailbox) -> Result<Self> {
+        self.to.push(mailbox.validated()?);
+        Ok(self)
+    }
+
     /// Adds one `Cc:` recipient.
     ///
     /// ```
@@ -765,6 +878,30 @@ impl MessageBuilder {
     /// Rejects malformed mailboxes.
     pub fn cc(mut self, raw: &str) -> Result<Self> {
         self.cc.push(Mailbox::parse(raw)?);
+        Ok(self)
+    }
+
+    /// Adds one `Cc:` recipient from an already parsed [`Mailbox`].
+    ///
+    /// ```
+    /// use mime_message::{Mailbox, Message};
+    ///
+    /// let recipient = Mailbox::new(None, "c@example.com")?;
+    /// let message = Message::builder()
+    ///     .from("shop@example.com")?
+    ///     .to("kunde@example.com")?
+    ///     .cc_mailbox(recipient)?
+    ///     .build()?;
+    /// assert_eq!(message.cc[0].address, "c@example.com");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mailbox whose public fields were changed to an invalid address
+    /// or an unrenderable display name after construction.
+    pub fn cc_mailbox(mut self, mailbox: Mailbox) -> Result<Self> {
+        self.cc.push(mailbox.validated()?);
         Ok(self)
     }
 
@@ -792,6 +929,31 @@ impl MessageBuilder {
     /// Rejects malformed mailboxes.
     pub fn bcc(mut self, raw: &str) -> Result<Self> {
         self.bcc.push(Mailbox::parse(raw)?);
+        Ok(self)
+    }
+
+    /// Adds one `Bcc:` recipient from an already parsed [`Mailbox`].
+    ///
+    /// ```
+    /// use mime_message::{Mailbox, Message};
+    ///
+    /// let recipient = Mailbox::new(None, "secret@example.com")?;
+    /// let message = Message::builder()
+    ///     .from("shop@example.com")?
+    ///     .to("kunde@example.com")?
+    ///     .bcc_mailbox(recipient)?
+    ///     .build()?;
+    /// assert_eq!(message.bcc[0].address, "secret@example.com");
+    /// assert!(!String::from_utf8_lossy(&message.render()?).contains("secret@example.com"));
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Rejects a mailbox whose public fields were changed to an invalid address
+    /// or an unrenderable display name after construction.
+    pub fn bcc_mailbox(mut self, mailbox: Mailbox) -> Result<Self> {
+        self.bcc.push(mailbox.validated()?);
         Ok(self)
     }
 

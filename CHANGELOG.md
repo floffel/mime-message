@@ -38,6 +38,14 @@ manifest disagree.
 
 ### Added
 
+- **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
+  and `impl FromStr for Mailbox` route through the same address and display-name
+  checks as parsing, and `MessageBuilder::from_mailbox` / `to_mailbox` /
+  `cc_mailbox` / `bcc_mailbox` accept a `Mailbox` value without converting it back
+  to a string. The builder methods revalidate the public fields, so a parsed
+  mailbox remains reusable while a struct literal mutated into an invalid address
+  is rejected at the mutation site.
+
 - **Property coverage for the pure `cid` helpers.** `cid::normalise`, `cid::data_uri` /
   `cid::try_data_uri`, and `cid::rewrite` now have generated tests for Unicode
   references, malformed and empty inputs, unresolved-reference preservation, output
