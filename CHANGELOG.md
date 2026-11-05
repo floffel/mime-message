@@ -172,6 +172,11 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
+  label such as `iso-8859-1*de` was handed to the charset registry whole, where
+  it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a
+  replacement character. Only the part before the first `*` now selects the
+  decoder, and `=?iso-8859-1*de?Q?Gr=FC=DFe?=` decodes to `Grüße` again.
 - **`ED25519 PRIVATE KEY` is no longer accepted as a key label.**
   Both private-key decoders this crate routes to (`ed25519-dalek` and `rsa`) require the
   standard PKCS#8 label `PRIVATE KEY`, so a block labelled `ED25519 PRIVATE KEY` could never
