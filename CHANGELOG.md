@@ -247,6 +247,14 @@ manifest disagree.
   one mailbox with the rest of the caller's string gone. The builder now shares the
   parser's mailbox grammar and the shared path rejects non-CFWS suffixes, while
   still accepting a comment after the address.
+- **Folding and unfolding now agree on Unicode whitespace, so a rendered header value
+  round-trips byte for byte.** `fold_header` only folds at an ASCII space and the
+  per-line unfold trim was already ASCII-only, but `unfold`'s final trim still used
+  `str::trim`, which is Unicode-aware: a value ending in U+00A0 (or U+2000, U+3000, …)
+  lost that byte when it was read back, so a rendered header value did not survive
+  `render` → `parse`. The final trim now strips ASCII folding whitespace only, matching
+  the fold path. Pinned by the `unfold_trims_ascii_fws_only` unit test and the
+  `tests/headers.rs` boundary pair (NBSP inside a line versus at a fold point).
 - **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with
