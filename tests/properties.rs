@@ -394,8 +394,8 @@ proptest! {
                 "byte 0x{byte:02x} is not in {raw:?}"
             );
             prop_assert!(
-                byte == 0x7F || (byte < 0x20 && byte != b'\t'),
-                "0x{byte:02x} is not a forbidden byte in {raw:?}"
+                byte == 0x7F || (byte < 0x20 && byte != b'\t') || byte >= 0xC2,
+                "0x{byte:02x} does not identify a rejected character in {raw:?}"
             );
         }
     }

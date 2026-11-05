@@ -121,7 +121,8 @@ impl Header {
     /// # Errors
     ///
     /// Rejects a malformed name, a bare CR or LF, a fold that does not start
-    /// with whitespace, and control characters other than tab.
+    /// with whitespace, and control characters other than tab, including the
+    /// Unicode line separators U+0085, U+2028 and U+2029.
     ///
     /// For untrusted input, prefer [`Header::from_wire_with_limits`], which
     /// checks a byte budget before this constructor copies or unfolds the raw
@@ -298,6 +299,31 @@ fn check_value(name: &str, value: &str) -> Result<()> {
     }
 }
 
+/// True when `value` contains a character a header value cannot carry.
+///
+/// The byte-wise [`forbidden_value_byte`] check predates this one and is kept
+/// for the exact-byte payload on ASCII controls. This check is the character
+/// view the modelled-header validator, the renderer and the raw-wire constructor
+/// all share, so U+0085/U+2028/U+2029 cannot slip through as multi-byte UTF-8.
+pub(crate) fn has_forbidden_chars(value: &str) -> bool {
+    value.chars().any(is_forbidden_char)
+}
+
+fn is_forbidden_char(ch: char) -> bool {
+    matches!(ch, '\r' | '\n' | '\0' | '\u{85}' | '\u{2028}' | '\u{2029}')
+        || (ch.is_control() && ch != '\t')
+}
+
+/// The byte a character-aware rejection reports for `ch`.
+///
+/// For ASCII controls this is the byte itself. A non-ASCII character has no
+/// single byte, so the first byte of its UTF-8 encoding identifies it.
+fn utf8_lead_byte(ch: char) -> u8 {
+    let mut encoded = [0_u8; 4];
+    ch.encode_utf8(&mut encoded);
+    encoded[0]
+}
+
 /// Validates a raw value that may contain CRLF folds.
 pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
     let bytes = raw.as_bytes();
@@ -328,7 +354,19 @@ pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
             byte if is_forbidden_byte(byte) => {
                 return Err(Error::control_value(name, byte));
             }
-            _ => index += 1,
+            byte if byte.is_ascii() => {
+                index += 1;
+            }
+            _ => {
+                let ch = raw[index..]
+                    .chars()
+                    .next()
+                    .expect("index is a valid UTF-8 boundary");
+                if is_forbidden_char(ch) {
+                    return Err(Error::control_value(name, utf8_lead_byte(ch)));
+                }
+                index += ch.len_utf8();
+            }
         }
     }
     Ok(())

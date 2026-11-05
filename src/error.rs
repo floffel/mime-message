@@ -108,13 +108,14 @@ pub enum Error {
         name: String,
         /// The byte the check rejected.
         ///
-        /// The byte-wise checks (`Header::new`, `Header::from_wire`, the parser
-        /// and the renderer) report the offending byte itself: below `0x20`
-        /// without tab, or `0x7f`. The `Content-ID` check reads *characters* and
-        /// also rejects `<`, `>` and whitespace, which are not control bytes but
-        /// cannot be re-rendered safely there; for a non-ASCII character it
-        /// reports the first byte of that character's UTF-8 encoding, because a
-        /// `char` above `0x7f` has no single byte of its own.
+        /// The ASCII checks (`Header::new`) report the offending byte itself:
+        /// below `0x20` without tab, or `0x7f`. The fold-aware checks
+        /// (`Header::from_wire`, the parser and the renderer) also reject U+0085,
+        /// U+2028 and U+2029; for a non-ASCII character they report the first
+        /// byte of that character's UTF-8 encoding, because a `char` above
+        /// `0x7f` has no single byte of its own. The `Content-ID` check reads
+        /// *characters* too and also rejects `<`, `>` and whitespace, which are
+        /// not control bytes but cannot be re-rendered safely there.
         byte: u8,
     },
     /// A structural header that must appear once appears more than once.
@@ -431,7 +432,7 @@ impl Error {
 
     /// A control byte rejected in the value of `name`.
     ///
-    /// One constructor for every place that rejects a control byte in a value —
+    /// One constructor for every place that rejects a control byte or character in a value —
     /// [`Header::new`](crate::Header::new),
     /// [`Header::from_wire`](crate::Header::from_wire), the parser, the
     /// renderer's fold check and its `Content-ID` check — so the payload is

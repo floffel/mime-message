@@ -254,6 +254,42 @@ fn header_values_with_line_breaks_are_rejected() {
 }
 
 #[test]
+fn preserved_headers_reject_unicode_line_separators() {
+    for (separator, byte) in [('\u{85}', 0xc2), ('\u{2028}', 0xe2), ('\u{2029}', 0xe2)] {
+        let value = format!("one{separator}two");
+        let error = Error::ControlCharacter {
+            name: "X-A".to_string(),
+            byte,
+        };
+
+        let raw = format!("From: a@example.com\r\nX-A: {value}\r\n\r\nx");
+        assert_eq!(parse(&raw).unwrap_err(), error, "raw parse {separator:?}");
+
+        let mut message = parse("From: a@example.com\r\n\r\nx").expect("parse");
+        let header = Header::from_wire("X-A", format!(" {value}"))
+            .expect_err("Header::from_wire rejects the separator itself");
+        assert_eq!(header, error, "from_wire {separator:?}");
+
+        let header = Header::new("X-A", value).expect("new header");
+        assert_eq!(
+            message.set_header(header).unwrap_err(),
+            error,
+            "set_header {separator:?}"
+        );
+        assert_eq!(message.headers(), []);
+    }
+}
+
+#[test]
+fn preserved_headers_keep_legal_folds() {
+    let raw = "From: a@example.com\r\nTo: b@example.com\r\nX-A: one\r\n\ttwo\r\n\r\nx";
+    let message = parse(raw).expect("parse");
+    let rendered = raw_of(&message);
+    assert!(rendered.contains("X-A: one\r\n\ttwo\r\n"));
+    assert_eq!(message.header("X-A"), Some("one two"));
+}
+
+#[test]
 fn from_wire_rejects_folds_that_end_the_header_block() {
     for bad in [" a\r\n ", " a\r\n\t", "\r\n b"] {
         assert_eq!(
