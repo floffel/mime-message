@@ -312,7 +312,7 @@ pub enum KeyRejected {
     /// The text contains no `-----BEGIN …-----` line.
     NotPem,
     /// The PEM label is not one this crate reads (`RSA PRIVATE KEY`,
-    /// `PRIVATE KEY`, `ED25519 PRIVATE KEY`).
+    /// `PRIVATE KEY`).
     ///
     /// The label itself is not repeated: it is caller text, and the message
     /// must not echo caller bytes.

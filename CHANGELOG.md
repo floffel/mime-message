@@ -164,6 +164,15 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **`ED25519 PRIVATE KEY` is no longer accepted as a key label.**
+  Both private-key decoders this crate routes to (`ed25519-dalek` and `rsa`) require the
+  standard PKCS#8 label `PRIVATE KEY`, so a block labelled `ED25519 PRIVATE KEY` could never
+  load: the alternative matched the label and then failed in every decoder. It now falls
+  through to the unsupported-label path, which is classified as
+  `Error::InvalidKey(KeyRejected::UnsupportedPemLabel)` without probing a decoder or carrying
+  a cause. `RSA PRIVATE KEY` (PKCS#1) and `PRIVATE KEY` (PKCS#8) are unchanged. Pinned by
+  `tests/key_errors.rs` (the rejection has no source and the same body loads under
+  `PRIVATE KEY`) and `tests/key_redaction.rs`.
 
 - **RFC 2047 decoding keeps whitespace before an undecodable word.** The
   decoder dropped the gap between an encoded-word and a following token that
