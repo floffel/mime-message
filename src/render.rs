@@ -119,7 +119,7 @@ fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
         // Rendering `From` twice is header injection with extra steps; the
         // mutation APIs reject this earlier, and the renderer keeps the guard.
         ensure_not_modelled(header)?;
-        check_no_line_break(header.raw_value(), header.name())?;
+        check_preserved_header(header.raw_value(), header.name())?;
         out.push_str(header.name());
         out.push(':');
         out.push_str(header.raw_value());
@@ -128,9 +128,9 @@ fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Allows CRLF only when it is followed by whitespace and more content.
-fn check_no_line_break(value: &str, name: &str) -> Result<()> {
-    crate::header::check_folded_value(name, value)
+/// Rejects preserved headers that cannot be emitted inside RFC limits.
+fn check_preserved_header(value: &str, name: &str) -> Result<()> {
+    crate::header::check_rendered_header(name, value)
 }
 
 fn write_part_header(

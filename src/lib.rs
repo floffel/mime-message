@@ -118,7 +118,7 @@ pub(crate) fn ensure_not_modelled(header: &Header) -> Result<()> {
 /// The mutation APIs call this before storing a header, so the failure names the
 /// field and the offending UTF-8 lead byte instead of waiting for `render`.
 pub(crate) fn ensure_safe_preserved_header(header: &Header) -> Result<()> {
-    crate::header::check_folded_value(header.name(), header.raw_value())
+    crate::header::check_rendered_header(header.name(), header.raw_value())
 }
 
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
