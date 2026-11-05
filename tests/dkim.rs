@@ -15,7 +15,9 @@
 #![cfg(feature = "dkim")]
 
 use mime_message::dkim::{self, Canonicalization, SignParams, SigningKey, VerifyingKey};
-use mime_message::{Attachment, Error, Header, KeyRejected, Message};
+use mime_message::{
+    Attachment, Error, Header, KeyRejected, Message, SignatureCause, SignatureDefect,
+};
 
 const RFC8463_MESSAGE: &str = include_str!("fixtures/rfc8463-a3.eml");
 const RFC8463_RSA_RECORD: &str = "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB";
@@ -422,10 +424,69 @@ fn malformed_signatures_are_rejected_with_a_typed_error() {
     for case in cases {
         let outcome = dkim::verify(case, &key);
         assert!(
-            matches!(outcome, Err(Error::InvalidSignature(_))),
+            matches!(
+                outcome,
+                Err(Error::InvalidSignature(_) | Error::InvalidSignatureCause { .. })
+            ),
             "expected InvalidSignature, got {outcome:?} for {case:?}"
         );
     }
+}
+
+#[test]
+fn malformed_signature_causes_reach_error_source() {
+    let bad_base64 = concat!(
+        "DKIM-Signature: v=1; a=ed25519-sha256; d=e; s=s; h=from; bh=!!; b=AA==\r\n",
+        "From: a@b\r\n",
+        "\r\n",
+        "x",
+    );
+    let error = dkim::signatures(bad_base64).unwrap_err();
+    let Error::InvalidSignatureCause { source, .. } = &error else {
+        panic!("base64 failure must keep a typed cause: {error:?}");
+    };
+    assert!(matches!(
+        source.as_ref(),
+        SignatureCause::Base64 { tag: "bh=", .. }
+    ));
+    let cause = std::error::Error::source(&error).expect("SignatureCause is the first source");
+    assert!(cause.to_string().contains("bh= is not base64"));
+    let leaf = std::error::Error::source(cause).expect("base64 decoder error is the next source");
+    assert!(
+        leaf.to_string().contains("Invalid symbol"),
+        "leaf was {leaf}"
+    );
+
+    let duplicate = concat!(
+        "DKIM-Signature: v=1; a=ed25519-sha256; d=e; s=s; h=from; bh=AA==; b=AA==; b=BB==\r\n",
+        "From: a@b\r\n",
+        "\r\n",
+        "x",
+    );
+    let error = dkim::signatures(duplicate).unwrap_err();
+    let Error::InvalidSignatureCause { source, .. } = &error else {
+        panic!("tag-list failure must keep a typed cause: {error:?}");
+    };
+    assert!(matches!(
+        source.as_ref(),
+        SignatureCause::Defect(SignatureDefect::DuplicateTag { name }) if name == "b"
+    ));
+    let cause = std::error::Error::source(&error).expect("SignatureCause is the first source");
+    assert!(cause.to_string().contains("duplicate b= tag"));
+}
+
+#[test]
+fn invalid_base64_keeps_the_decoder_error_as_source() {
+    let error = mime_message::transfer::decode_base64("SGVsbG8*").unwrap_err();
+    let Error::InvalidBase64 { part, offset, .. } = &error else {
+        panic!("expected InvalidBase64: {error:?}");
+    };
+    assert_eq!((*part, *offset), (0, 7));
+    let source = std::error::Error::source(&error).expect("decoder error is the source");
+    assert!(
+        source.to_string().contains("Invalid symbol"),
+        "source was {source}"
+    );
 }
 
 #[test]
@@ -804,7 +865,7 @@ fn body_length_and_unknown_tags_are_parsed() {
     let bad = raw.replace("l=42", "l=many");
     assert!(matches!(
         dkim::signatures(&bad),
-        Err(Error::InvalidSignature(_))
+        Err(Error::InvalidSignature(_) | Error::InvalidSignatureCause { .. })
     ));
 }
 
@@ -819,7 +880,7 @@ fn a_broken_h_tag_is_rejected() {
     );
     assert!(matches!(
         dkim::signatures(raw),
-        Err(Error::InvalidSignature(_))
+        Err(Error::InvalidSignature(_) | Error::InvalidSignatureCause { .. })
     ));
 }
 
@@ -840,7 +901,10 @@ fn signatures_of_the_wrong_length_are_malformed() {
     let ed_message = rsa_message.replace("a=rsa-sha256", "a=ed25519-sha256");
     let outcome = dkim::verify(&ed_message, &ed);
     assert!(
-        matches!(outcome, Err(Error::InvalidSignature(_))),
+        matches!(
+            outcome,
+            Err(Error::InvalidSignature(_) | Error::InvalidSignatureCause { .. })
+        ),
         "got {outcome:?}"
     );
 }

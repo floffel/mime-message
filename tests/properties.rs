@@ -364,7 +364,7 @@ proptest! {
     fn base64_errors_stay_inside_the_input(payload in "[A-Za-z0-9+/=*\\r\\n ]{0,200}") {
         match mime_message::transfer::decode_base64(&payload) {
             Ok(bytes) => prop_assert!(bytes.len() <= payload.len()),
-            Err(Error::InvalidBase64 { part, offset }) => {
+            Err(Error::InvalidBase64 { part, offset, .. }) => {
                 prop_assert_eq!(part, 0, "a standalone payload names no part");
                 prop_assert!(
                     offset <= payload.len(),

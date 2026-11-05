@@ -9,7 +9,7 @@ use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use base64::Engine as _;
 
-use crate::error::{Error, Result};
+use crate::error::{Base64DecodeError, Error, Result};
 
 /// Base64 that accepts missing padding and non-zero trailing bits.
 const LENIENT: GeneralPurpose = GeneralPurpose::new(
@@ -53,12 +53,14 @@ pub(crate) fn decode_base64_in_part(input: &str, part: usize) -> Result<Vec<u8>>
             compact.push(byte);
         }
     }
-    LENIENT
-        .decode(&compact)
-        .map_err(|error| Error::InvalidBase64 {
+    LENIENT.decode(&compact).map_err(|error| {
+        let offset = rejected_offset(input, &error);
+        Error::InvalidBase64 {
             part,
-            offset: rejected_offset(input, &error),
-        })
+            offset,
+            source: Box::new(Base64DecodeError::new(error)),
+        }
+    })
 }
 
 /// Maps the decoder's verdict onto a byte offset in `input`.
@@ -273,32 +275,33 @@ mod tests {
 
     #[test]
     fn base64_rejects_alphabet_violations() {
-        assert_eq!(
-            decode_base64("SGVsbG8*"),
-            Err(Error::InvalidBase64 { part: 0, offset: 7 })
-        );
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("SGVsbG8*").unwrap_err()
+        else {
+            panic!("alphabet violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 7));
         assert_eq!(decode_base64("SGV sbG8=").err(), None); // whitespace is fine
-        assert_eq!(
-            decode_base64("===="),
-            Err(Error::InvalidBase64 { part: 0, offset: 0 })
-        );
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("====").unwrap_err() else {
+            panic!("padding violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 0));
     }
 
     /// The offset is a position in the text the caller still has: the decoder
     /// counts in the whitespace-free payload, so the offset is mapped back.
     #[test]
     fn base64_offset_counts_the_line_breaks_the_decoder_skipped() {
-        assert_eq!(
-            decode_base64("SGVs\r\nbG8=*"),
-            Err(Error::InvalidBase64 {
-                part: 0,
-                offset: 10
-            })
-        );
-        assert_eq!(
-            decode_base64("QUJD\r\nQUJ*.QUJD"),
-            Err(Error::InvalidBase64 { part: 0, offset: 9 })
-        );
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("SGVs\r\nbG8=*").unwrap_err()
+        else {
+            panic!("alphabet violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 10));
+        let Error::InvalidBase64 { part, offset, .. } =
+            decode_base64("QUJD\r\nQUJ*.QUJD").unwrap_err()
+        else {
+            panic!("alphabet violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 9));
     }
 
     /// A payload that is only too short has no wrong byte, so the offset is the
@@ -308,18 +311,20 @@ mod tests {
         // Just inside the limit: two symbols are a complete quad.
         assert_eq!(decode_base64("AB").unwrap(), vec![0]);
         // One symbol short of a quad, wrapped the way a body arrives.
-        assert_eq!(
-            decode_base64("S\r\n"),
-            Err(Error::InvalidBase64 { part: 0, offset: 3 })
-        );
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("S\r\n").unwrap_err() else {
+            panic!("length violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 3));
     }
 
     #[test]
     fn a_part_number_travels_with_the_error() {
-        assert_eq!(
-            decode_base64_in_part("SGVsbG8*", 7),
-            Err(Error::InvalidBase64 { part: 7, offset: 7 })
-        );
+        let Error::InvalidBase64 { part, offset, .. } =
+            decode_base64_in_part("SGVsbG8*", 7).unwrap_err()
+        else {
+            panic!("alphabet violation must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (7, 7));
     }
 
     #[test]

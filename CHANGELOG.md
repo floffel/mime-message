@@ -126,6 +126,18 @@ manifest disagree.
 
 ### Security
 
+- **DKIM signature and base64 decode failures now keep their typed cause.** The
+  `DKIM-Signature` parser and verifier previously flattened parser, base64 and
+  signature-format failures into `Error::InvalidSignature(String)`, so
+  `std::error::Error::source()` stopped at the rendered sentence. `InvalidSignatureCause`
+  carries a non-exhaustive `SignatureCause` (`SignatureDefect` for malformed tag lists,
+  or `Base64 { tag, source }` for `bh=`/`b=`), and `Error::InvalidBase64` now carries
+  the `base64` decoder's own error as its `source()`. The old `InvalidSignature(String)`
+  variant remains for purely local failures with no lower-level cause. Pinned by
+  `tests/dkim.rs` and the transfer/error-location tests; callers that matched
+  `InvalidSignature(_)` for malformed base64 or duplicate tags should also handle
+  `InvalidSignatureCause { .. }`.
+
 - **`Error::InvalidMailbox` now escapes and bounds attacker-controlled mailbox text.** The
   variant rendered its payload verbatim, so CR, LF, ESC/ANSI sequences and any length of bytes
   reached logs as written, and the builder path kept the whole rejected address while the parser
