@@ -197,6 +197,17 @@ manifest disagree.
   `Error::DuplicateHeader` before the header enters the preserved list. The renderer keeps
   the same duplicate-name guard as defence in depth. Pinned by the header mutation tests
   for modelled and non-modelled names and for the builder path.
+- **A DKIM `h=` tag longer than a line is folded instead of emitted as one
+  over-long line.** `fold_field` only broke *between* tags, so a message with
+  hundreds of header occurrences (mailing lists, `Received`/`ARC-Seen` chains)
+  built an `h=` value far past the 78-column recommendation and, at a few
+  hundred more, past RFC 5322's 998-octet hard limit — a header relays may
+  reject or re-fold, breaking the signature. The folder now splits inside `h=`
+  at the `:` between header names and inside the `bh=` / `b=` base64 values,
+  and returns `Error::InvalidSignature` when a single run cannot be split under
+  998 octets. Pinned by `fold_field_splits_a_single_long_tag` (a 400-header
+  message whose every emitted line is <= 78 columns) and
+  `fold_field_rejects_a_tag_that_cannot_be_split`.
 
 - **Quoted-printable escapes trailing whitespace before a soft line break.** A
   space or tab that exactly filled the content budget of an encoded line was

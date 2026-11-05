@@ -70,8 +70,11 @@ const ED25519_KEY: &str = "Ed25519 key";
 /// The `what` of a rejection about the base64 payload of a DNS `p=` tag.
 const P_TAG: &str = "p=";
 
-/// Longest line a folded `DKIM-Signature` may occupy.
+/// Longest line a folded `DKIM-Signature` should occupy (RFC 5322 §2.1.1).
 const MAX_LINE: usize = 78;
+
+/// Hard limit on a line, in octets (RFC 5322 §2.1.1).
+const MAX_LINE_HARD: usize = 998;
 
 /// Upper bound for a PEM key blob, in bytes.
 ///
@@ -989,7 +992,7 @@ pub fn sign(message: &Message, key: &SigningKey, params: &SignParams) -> Result<
     value.push_str(&format!(" bh={};", STANDARD.encode(body_hash)));
     value.push_str(" b=");
 
-    let prefix = fold_field("DKIM-Signature", &value);
+    let prefix = fold_field("DKIM-Signature", &value)?;
     let signed_header = Field {
         name: "DKIM-Signature".to_string(),
         raw: prefix.clone(),
@@ -1454,24 +1457,130 @@ fn is_tag_start(bytes: &[u8], index: usize) -> bool {
     }
 }
 
-/// `name: value` folded at tag boundaries so lines stay below 78 columns.
-fn fold_field(name: &str, value: &str) -> String {
+/// `name: value` folded so lines stay below [`MAX_LINE`] columns.
+///
+/// Folding normally happens at the `;` between tags. A single tag can be
+/// longer than a line on its own — the `h=` list is built from every header
+/// occurrence and mailing lists push it into the hundreds — so a tag that no
+/// longer fits is split at a boundary the tag permits: after `:` for `h=`
+/// (RFC 6376 §3.5 allows FWS between header names) and anywhere for the
+/// base64 values `bh=` and `b=`. A tag with no safe break point is emitted as
+/// one piece unless it would reach the [`MAX_LINE_HARD`] octet limit, which is
+/// then a hard error rather than a line a relay must reject.
+fn fold_field(name: &str, value: &str) -> Result<String> {
     let mut out = format!("{name}: ");
     let mut line_len = out.len();
-    for (index, tag) in value.split_inclusive(';').enumerate() {
+    let mut first = true;
+    for tag in value.split_inclusive(';') {
         let tag = tag.trim_start();
-        let spacer = usize::from(index > 0);
-        if index > 0 && line_len + spacer + tag.len() > MAX_LINE {
+        if tag.is_empty() {
+            continue;
+        }
+        let separator = usize::from(!first);
+        if line_len + separator + tag.len() <= MAX_LINE {
+            if !first {
+                out.push(' ');
+                line_len += 1;
+            }
+            out.push_str(tag);
+            line_len += tag.len();
+            first = false;
+            continue;
+        }
+        // The tag does not fit where it is; start the tag's own fold so every
+        // fragment begins on a line with a full budget.
+        if !first {
             out.push_str("\r\n ");
             line_len = 1;
-        } else if index > 0 {
-            out.push(' ');
-            line_len += 1;
         }
-        out.push_str(tag);
-        line_len += tag.len();
+        let budget = MAX_LINE - line_len;
+        for (index, piece) in split_tag(tag, budget)?.into_iter().enumerate() {
+            if index > 0 {
+                out.push_str("\r\n ");
+                line_len = 1;
+            }
+            out.push_str(piece);
+            line_len += piece.len();
+        }
+        first = false;
     }
-    out
+    Ok(out)
+}
+
+/// Splits one `;`-terminated tag into pieces that fit on a folded line.
+///
+/// `first_budget` is the room left on the line a tag starts on; every later
+/// piece gets a fresh line, whose first byte is the fold's whitespace. `h=` is
+/// split after `:` so whole header names stay together; base64 values may be
+/// split anywhere, since whitespace is not part of the value. Any other tag has
+/// no break point we may insert, so it stays whole and is only refused when it
+/// cannot fit even on an unfurled [`MAX_LINE_HARD`] line.
+fn split_tag(tag: &str, first_budget: usize) -> Result<Vec<&str>> {
+    let rest_budget = MAX_LINE - 1;
+    if tag.len() <= first_budget {
+        return Ok(vec![tag]);
+    }
+    let name = tag.split_once('=').map_or("", |(name, _)| name.trim());
+    let colon_boundary = name.eq_ignore_ascii_case("h");
+    let base64_value = name.eq_ignore_ascii_case("bh") || name.eq_ignore_ascii_case("b");
+    if !colon_boundary && !base64_value {
+        // No break point we may insert; keep it whole, or refuse a value so
+        // long that it would breach the hard octet limit on a line of its own.
+        if tag.len() + 1 > MAX_LINE_HARD {
+            return Err(Error::InvalidSignature(format!(
+                "DKIM {name}= value needs {} octets, over the {MAX_LINE_HARD}-octet line limit",
+                tag.len()
+            )));
+        }
+        return Ok(vec![tag]);
+    }
+    let mut pieces = Vec::new();
+    let mut start = 0usize;
+    while start < tag.len() {
+        let remaining = &tag[start..];
+        let budget = if pieces.is_empty() {
+            first_budget
+        } else {
+            rest_budget
+        };
+        if remaining.len() <= budget {
+            pieces.push(remaining);
+            break;
+        }
+        let window_end = start + budget;
+        let break_at = if colon_boundary {
+            if let Some(offset) = tag[start..window_end].rfind(':') {
+                start + offset + 1
+            } else {
+                // No colon inside the budget: the header name at `start` is
+                // itself longer than a line. Keep it whole if it still fits a
+                // hard line, otherwise this is the unbreakable case.
+                let run_end = tag[start..]
+                    .find(':')
+                    .map_or(tag.len(), |offset| start + offset + 1);
+                if run_end - start + 1 > MAX_LINE_HARD {
+                    return Err(Error::InvalidSignature(format!(
+                        "DKIM h= header name needs {} octets, over the {MAX_LINE_HARD}-octet line limit",
+                        run_end - start
+                    )));
+                }
+                run_end
+            }
+        } else {
+            let mut cut = window_end;
+            while !tag.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            cut
+        };
+        if break_at <= start {
+            // Defensive: never loop without progress.
+            break;
+        }
+        pieces.push(&tag[start..break_at]);
+        start = break_at;
+    }
+    Ok(pieces)
 }
 
 /// Wraps a long base64 value at 64 columns with folded continuation lines.
@@ -1734,7 +1843,7 @@ mod tests {
     #[test]
     fn fold_field_breaks_long_tag_lists() {
         let value = "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=selector; h=from:to:subject; bh=AAAA; b=";
-        let folded = fold_field("DKIM-Signature", value);
+        let folded = fold_field("DKIM-Signature", value).expect("fold");
         for line in folded.split("\r\n") {
             assert!(line.len() <= MAX_LINE, "line too long: {line:?}");
         }
@@ -1745,6 +1854,48 @@ mod tests {
                 .replace("\r\n ", " ")
                 .trim_start_matches("DKIM-Signature: "),
             value
+        );
+    }
+
+    #[test]
+    fn fold_field_splits_a_single_long_tag() {
+        let names = (0..400)
+            .map(|index| format!("x-header-{index}"))
+            .collect::<Vec<_>>()
+            .join(":");
+        let value = format!("v=1; a=ed25519-sha256; h={names}; bh=AAAA; b=");
+        let folded = fold_field("DKIM-Signature", &value).expect("fold");
+        for line in folded.split("\r\n") {
+            assert!(
+                line.len() <= MAX_LINE,
+                "line of {} columns: {line:?}",
+                line.len()
+            );
+        }
+        // Folding inserts CRLF + WSP, which unfolding turns back into spaces;
+        // FWS is legal between the names of `h=`, so the list still names
+        // exactly the same headers once the inserted whitespace is dropped.
+        let unfolded = folded
+            .replace("\r\n ", " ")
+            .trim_start_matches("DKIM-Signature: ")
+            .to_string();
+        let tags = parse_tags(&unfolded).expect("the folded value still parses");
+        let signed = tags
+            .get("h")
+            .expect("h=")
+            .split_whitespace()
+            .collect::<String>();
+        assert_eq!(signed, names);
+        assert_eq!(tags.get("a").map(String::as_str), Some("ed25519-sha256"));
+    }
+
+    #[test]
+    fn fold_field_rejects_a_tag_that_cannot_be_split() {
+        let value = format!("v=1; x={};", "y".repeat(MAX_LINE_HARD + 10));
+        let error = fold_field("DKIM-Signature", &value).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidSignature(_)),
+            "unexpected error: {error:?}"
         );
     }
 
@@ -1839,7 +1990,7 @@ mod vector_tests {
             names.join(":"),
             STANDARD.encode(Sha256::digest(&canonical)),
         );
-        value = fold_field("DKIM-Signature", &value);
+        value = fold_field("DKIM-Signature", &value).expect("fold");
         let signature_field = Field {
             name: "DKIM-Signature".to_string(),
             raw: value.clone(),
