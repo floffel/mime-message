@@ -464,6 +464,12 @@ enum PublicMaterial {
     Ed25519(Box<ed25519_dalek::VerifyingKey>),
 }
 
+#[derive(Debug)]
+enum VerifyFailure {
+    Mismatch,
+    Malformed(String),
+}
+
 impl VerifyingKey {
     /// Reads a DKIM DNS TXT record (`v=DKIM1; k=rsa; p=…`).
     ///
@@ -619,25 +625,25 @@ impl VerifyingKey {
         }
     }
 
-    fn verify(&self, input: &[u8], signature: &[u8]) -> Result<()> {
+    fn verify(&self, input: &[u8], signature: &[u8]) -> std::result::Result<(), VerifyFailure> {
         match &self.material {
             PublicMaterial::Rsa(public) => {
                 let verifying = RsaVerifyingKey::<Sha256>::new((**public).clone());
                 let signature = rsa::pkcs1v15::Signature::try_from(signature).map_err(|_| {
-                    Error::InvalidSignature("RSA signature is malformed".to_string())
+                    VerifyFailure::Malformed("RSA signature is malformed".to_string())
                 })?;
                 verifying
                     .verify(input, &signature)
-                    .map_err(|_| Error::SignatureMismatch)
+                    .map_err(|_| VerifyFailure::Mismatch)
             }
             PublicMaterial::Ed25519(public) => {
                 let bytes: [u8; 64] = signature.try_into().map_err(|_| {
-                    Error::InvalidSignature("Ed25519 signature must be 64 bytes".to_string())
+                    VerifyFailure::Malformed("Ed25519 signature must be 64 bytes".to_string())
                 })?;
                 let signature = ed25519_dalek::Signature::from_bytes(&bytes);
                 public
                     .verify_strict(&Sha256::digest(input), &signature)
-                    .map_err(|_| Error::SignatureMismatch)
+                    .map_err(|_| VerifyFailure::Mismatch)
             }
         }
     }
@@ -1150,12 +1156,16 @@ pub fn verify(raw: &str, key: &VerifyingKey) -> Result<SignatureHeader> {
 
     // One broken signature must not hide a good one: a message can carry
     // several, from several senders, and only the key's algorithm is ours.
-    let mut first_error: Option<Error> = None;
+    // Keep malformed-header errors behind real verification failures: a parser
+    // error from an unrelated signature is less actionable than a body or
+    // signature mismatch from the matching selector.
+    let mut malformed: Option<Error> = None;
+    let mut mismatch: Option<Error> = None;
     for field in candidates {
         let signature = match SignatureHeader::parse(field) {
             Ok(signature) => signature,
             Err(error) => {
-                first_error.get_or_insert(error);
+                malformed.get_or_insert(error);
                 continue;
             }
         };
@@ -1164,13 +1174,18 @@ pub fn verify(raw: &str, key: &VerifyingKey) -> Result<SignatureHeader> {
         }
         match verify_one(&fields, body.as_bytes(), field, &signature, key) {
             Ok(()) => return Ok(signature),
+            Err(error @ (Error::BodyHashMismatch { .. } | Error::SignatureMismatch { .. })) => {
+                mismatch.get_or_insert(error);
+            }
             Err(error) => {
-                first_error.get_or_insert(error);
+                malformed.get_or_insert(error);
             }
         }
     }
 
-    first_error.map_or(Err(Error::NoMatchingSignature), Err)
+    mismatch
+        .or(malformed)
+        .map_or(Err(Error::NoMatchingSignature), Err)
 }
 
 fn verify_one(
@@ -1189,7 +1204,10 @@ fn verify_one(
         .unwrap_u8()
         != 1
     {
-        return Err(Error::BodyHashMismatch);
+        return Err(Error::BodyHashMismatch {
+            domain: signature.domain.clone(),
+            selector: signature.selector.clone(),
+        });
     }
 
     let stripped = Field {
@@ -1202,7 +1220,14 @@ fn verify_one(
         signature.header_canonicalization,
         &stripped,
     );
-    key.verify(&input, &signature.signature)
+    match key.verify(&input, &signature.signature) {
+        Ok(()) => Ok(()),
+        Err(VerifyFailure::Mismatch) => Err(Error::SignatureMismatch {
+            domain: signature.domain.clone(),
+            selector: signature.selector.clone(),
+        }),
+        Err(VerifyFailure::Malformed(message)) => Err(Error::InvalidSignature(message)),
+    }
 }
 
 /// Builds the bytes that are hashed: the listed headers plus the signature
@@ -2082,7 +2107,10 @@ mod vector_tests {
         let rewritten = raw.replace("signed part.", "SIGNED PART.");
         assert_eq!(
             verify(&rewritten, &key.verifying_key()).unwrap_err(),
-            Error::BodyHashMismatch
+            Error::BodyHashMismatch {
+                domain: "example.com".to_string(),
+                selector: "sel".to_string(),
+            }
         );
     }
 

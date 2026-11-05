@@ -93,11 +93,17 @@ fn rfc8463_tampering_breaks_both_signatures() {
     let tampered = RFC8463_MESSAGE.replace("Joe.", "Joseph.");
     assert_eq!(
         dkim::verify(&tampered, &ed).unwrap_err(),
-        Error::BodyHashMismatch
+        Error::BodyHashMismatch {
+            domain: "football.example.com".to_string(),
+            selector: "brisbane".to_string(),
+        }
     );
     assert_eq!(
         dkim::verify(&tampered, &rsa).unwrap_err(),
-        Error::BodyHashMismatch
+        Error::BodyHashMismatch {
+            domain: "football.example.com".to_string(),
+            selector: "test".to_string(),
+        }
     );
 }
 
@@ -928,6 +934,26 @@ fn a_broken_signature_does_not_hide_a_good_one() {
     // …but verification still finds the good one.
     let verified = dkim::verify(&broken, &key.verifying_key()).expect("good signature");
     assert_eq!(verified.selector, "good");
+}
+
+#[test]
+fn a_malformed_signature_does_not_hide_a_matching_mismatch() {
+    let key = SigningKey::from_ed25519_seed(&[49u8; 32]);
+    let signed = sample_message()
+        .sign(&key, &SignParams::new("example.com", "good"))
+        .expect("sign");
+    let raw = String::from_utf8(signed).expect("utf-8");
+    let tampered = raw.replace("Anbei die Rechnung.", "Anbei die Rechnung?");
+    let broken =
+        format!("DKIM-Signature: v=1; a=ed25519-sha256; d=example.com; s=broken\r\n{tampered}");
+
+    assert_eq!(
+        dkim::verify(&broken, &key.verifying_key()).unwrap_err(),
+        Error::BodyHashMismatch {
+            domain: "example.com".to_string(),
+            selector: "good".to_string(),
+        }
+    );
 }
 
 /// Both PEM entry points bound their input at 64 KiB (`MAX_PEM_BYTES` in
