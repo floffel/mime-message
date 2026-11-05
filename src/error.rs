@@ -25,7 +25,9 @@ pub enum Error {
     #[error("message needs at least one recipient")]
     NoRecipients,
     /// A local part or domain is obviously malformed (no `@`).
-    #[error("invalid mailbox: {0}")]
+    ///
+    /// The mailbox text is truncated to 120 bytes and escaped by `Display`.
+    #[error("invalid mailbox: {text}", text = invalid_mailbox_text(_0))]
     InvalidMailbox(String),
     /// The input contains no header block at all.
     #[error("message has no headers")]
@@ -405,6 +407,14 @@ impl std::fmt::Display for KeyRejected {
 }
 
 impl Error {
+    /// A rejected mailbox through the builder or parser.
+    ///
+    /// The payload is attacker-controlled, so one constructor keeps the cap
+    /// identical on both paths and bounds what the error keeps alive.
+    pub(crate) fn invalid_mailbox(raw: &str) -> Self {
+        Self::InvalidMailbox(crate::truncate(raw, 120))
+    }
+
     /// A rejected field name from a call that had no wire position.
     ///
     /// [`Header::new`](crate::Header::new), `Header::from_wire` and the renderer
@@ -431,6 +441,13 @@ impl Error {
             byte,
         }
     }
+}
+
+/// A mailbox shortened to a log-safe display string.
+fn invalid_mailbox_text(text: &str) -> String {
+    const PREFIX: &str = "invalid mailbox: ";
+    let max = 120 - PREFIX.len();
+    text.escape_debug().take(max).collect()
 }
 
 /// The PKCS#1 or PKCS#8 parser error behind [`Error::InvalidKeyPem`].

@@ -99,6 +99,13 @@ manifest disagree.
 
 ### Security
 
+- **`Error::InvalidMailbox` now escapes and bounds attacker-controlled mailbox text.** The
+  variant rendered its payload verbatim, so CR, LF, ESC/ANSI sequences and any length of bytes
+  reached logs as written, and the builder path kept the whole rejected address while the parser
+  path capped it at 120 bytes. Both paths now build the error through `Error::invalid_mailbox`,
+  the payload is truncated to 120 bytes at construction, and `Display` escapes it before rendering.
+  Pinned by `tests/invalid_mailbox.rs`.
+
 - **`Error::InvalidKey` can no longer carry key material, by construction.** The variant was
   `InvalidKey(String)` with derived `Debug` and `Display`, and its call sites interpolated
   third-party parser text and an unsupported PEM label, so the documented promise "the message
