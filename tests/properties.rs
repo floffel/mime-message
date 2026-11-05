@@ -254,7 +254,7 @@ proptest! {
         repeat in 1..20usize,
     ) {
         let subject = subject.repeat(repeat);
-        let raw = Message::builder()
+        let rendered = Message::builder()
             .from("a@example.com")
             .unwrap()
             .to("b@example.com")
@@ -262,8 +262,21 @@ proptest! {
             .subject(subject.clone())
             .build()
             .unwrap()
-            .render()
-            .unwrap();
+            .render();
+        let raw = match rendered {
+            Ok(raw) => raw,
+            Err(error) if subject.is_ascii() => {
+                prop_assert_eq!(
+                    error,
+                    mime_message::Error::LimitExceeded {
+                        what: "header line length",
+                        limit: 78,
+                    }
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        };
         let parsed = parse(&String::from_utf8(raw).unwrap()).unwrap();
         prop_assert_eq!(parsed.subject, subject.trim());
     }

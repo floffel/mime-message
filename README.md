@@ -73,7 +73,9 @@ Three numbers govern what the next hop accepts, and each one is enforced rather
 than hoped for:
 
 - **78 characters** per header line is the RFC 5322 §2.1.1 *should*. Every header
-  — including the headers of the MIME parts — is folded at a space.
+  — including the headers of the MIME parts — is folded at a space; a single
+  token longer than the budget is rejected with `LimitExceeded` rather than
+  emitted on an over-long line.
 - **998 octets** per line is the *must* in the same section. A body whose longest
   line is longer is sent as `quoted-printable`, where soft line breaks keep every
   line within 76 characters (RFC 2045 §6.7) and the decoded body is exactly the

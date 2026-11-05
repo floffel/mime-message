@@ -3,7 +3,7 @@
 //! outside it are both pinned.
 
 use mime_message::transfer;
-use mime_message::{Attachment, Message};
+use mime_message::{Attachment, Error, Message};
 use proptest::prelude::*;
 
 /// RFC 5322 §2.1.1: a line SHOULD be at most 78 characters.
@@ -67,6 +67,58 @@ fn header_lines_stay_within_78_octets() {
             line
         );
     }
+}
+
+#[test]
+fn a_single_token_longer_than_the_header_budget_is_rejected() {
+    // `Subject: ` is nine bytes, so the longest unwrapped token that fits is
+    // 69 bytes; one byte more cannot be folded without changing the value.
+    let render_subject = |subject: String| {
+        Message::builder()
+            .from("Shop <shop@example.com>")
+            .expect("from")
+            .to("kunde@example.com")
+            .expect("to")
+            .subject(subject)
+            .body("text")
+            .build()
+            .expect("build")
+            .render()
+    };
+
+    assert!(render_subject("x".repeat(69)).is_ok());
+    assert_eq!(
+        render_subject("x".repeat(70)).unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_SHOULD,
+        }
+    );
+    assert_eq!(
+        render_subject("x".repeat(200)).unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_SHOULD,
+        }
+    );
+
+    let long_id = Message::builder()
+        .from("Shop <shop@example.com>")
+        .expect("from")
+        .to("kunde@example.com")
+        .expect("to")
+        .subject("s")
+        .message_id("x".repeat(200))
+        .body("text")
+        .build()
+        .expect("build");
+    assert_eq!(
+        long_id.render().unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_SHOULD,
+        }
+    );
 }
 
 #[test]

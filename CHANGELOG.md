@@ -206,6 +206,13 @@ manifest disagree.
   previous 4/3 estimate under-reserved and forced repeated reallocations on
   non-ASCII or punctuation-heavy bodies. The reservation now matches the encoder's
   worst case, including soft line breaks. Pinned by an all-escaped UTF-8 unit test.
+- **Header folding now enforces the 78-character budget after appending a token.**
+  A single long token such as a 200-character subject word, `Message-ID` or
+  `Content-Disposition` filename was written on one over-long line because the
+  fold decision only looked ahead at space-separated tokens. The writer now
+  measures the line it just wrote and returns `Error::LimitExceeded` when one
+  token cannot fit, rather than silently breaking the documented guarantee.
+  Pinned by `a_single_token_longer_than_the_header_budget_is_rejected`.
 - **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
   label such as `iso-8859-1*de` was handed to the charset registry whole, where
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a
