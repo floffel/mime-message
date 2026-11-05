@@ -150,6 +150,13 @@ manifest disagree.
 
 ### Fixed
 
+- **RFC 2047 decoding keeps whitespace before an undecodable word.** The
+  decoder dropped the gap between an encoded-word and a following token that
+  merely started with `=?`, even when that token failed to decode and was
+  copied verbatim. The gap is now consumed only after the second word decodes,
+  so malformed input such as `=?UTF-8?Q?a?= =?UTF-8?X?b?=` renders as
+  `a =?UTF-8?X?b?=` instead of losing the space.
+
 - **A `ControlCharacter` rejection says which field and which byte, not just a name.**
   The variant was `ControlCharacter(String)` and every construction site passed the header *name*
   while the documentation described a rejected *value*, so the message said "header X-A

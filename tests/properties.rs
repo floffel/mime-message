@@ -288,6 +288,21 @@ proptest! {
         prop_assert!(outcome.is_ok());
     }
 
+    /// RFC 2047 only ignores whitespace between two *encoded-words*. A token
+    /// that merely starts with `=?` but cannot be decoded is copied verbatim,
+    /// and its separating whitespace must be copied with it.
+    #[test]
+    fn rfc2047_keeps_whitespace_before_undecodable_words(
+        gap in "[ \\t\\r\\n]{1,8}",
+        tail in prop_oneof![
+            "[A-Za-z0-9]{0,8}".prop_map(|payload| format!("=?UTF-8?X?{payload}?=")),
+            "[A-Za-z0-9]{0,8}".prop_map(|payload| format!("=?UTF-8?B?{payload}")),
+        ],
+    ) {
+        let input = format!("=?UTF-8?Q?a?={gap}{tail}");
+        prop_assert_eq!(mime_message::rfc2047::decode(&input), format!("a{gap}{tail}"));
+    }
+
     /// Base64 decoding is total, never allocates more than the input, and
     /// rejects without panicking.
     #[test]

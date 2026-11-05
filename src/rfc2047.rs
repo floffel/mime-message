@@ -61,8 +61,12 @@ pub fn decode(input: &str) -> String {
             // RFC 2047 §6.2: whitespace between adjacent encoded-words is
             // not part of the text.
             if previous_was_word && is_word_start(input, after_gap) {
-                index = after_gap;
-                continue;
+                if let Some((decoded, end)) = decode_word(input, after_gap) {
+                    out.push_str(&decoded);
+                    index = end;
+                    previous_was_word = true;
+                    continue;
+                }
             }
             out.push_str(&rest[..gap_len]);
             index = after_gap;
@@ -199,6 +203,12 @@ mod tests {
         assert_eq!(decode("=?nope?B?YWJj?="), "abc");
         assert_eq!(decode("=?"), "=?");
         assert_eq!(decode(""), "");
+    }
+
+    #[test]
+    fn whitespace_before_an_undecodable_word_is_preserved() {
+        assert_eq!(decode("=?UTF-8?Q?a?= =?UTF-8?X?b?="), "a =?UTF-8?X?b?=");
+        assert_eq!(decode("=?UTF-8?Q?a?= =?UTF-8?B?b"), "a =?UTF-8?B?b");
     }
 
     #[test]
