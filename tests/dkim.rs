@@ -214,8 +214,12 @@ fn signing_is_deterministic_and_timestamped_on_request() {
 #[test]
 fn duplicate_and_preserved_headers_are_all_signed() {
     let mut message = sample_message();
-    message.push_header(Header::new("X-Trace", "one").expect("header"));
-    message.push_header(Header::new("X-Trace", "two").expect("header"));
+    message
+        .push_header(Header::new("X-Trace", "one").expect("header"))
+        .expect("push");
+    message
+        .push_header(Header::new("X-Trace", "two").expect("header"))
+        .expect("push");
     let key = SigningKey::from_ed25519_seed(&[17u8; 32]);
     let signed = message
         .sign(&key, &SignParams::new("example.com", "sel"))

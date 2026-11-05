@@ -7,7 +7,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::error::{Error, Result};
-use crate::{cid, is_tchar, Mailbox, Message, MODELLED_HEADERS};
+use crate::{cid, ensure_not_modelled, is_tchar, Mailbox, Message};
 
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
@@ -109,10 +109,9 @@ fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
         if !header.name().bytes().all(is_tchar) {
             return Err(Error::malformed_name(header.name()));
         }
-        if MODELLED_HEADERS.iter().any(|name| header.is(name)) {
-            // Rendering `From` twice is header injection with extra steps.
-            return Err(Error::DuplicateHeader(header.name().to_string()));
-        }
+        // Rendering `From` twice is header injection with extra steps; the
+        // mutation APIs reject this earlier, and the renderer keeps the guard.
+        ensure_not_modelled(header)?;
         check_no_line_break(header.raw_value(), header.name())?;
         out.push_str(header.name());
         out.push(':');
@@ -429,4 +428,22 @@ fn boundary_for(message: &Message) -> String {
         attachment.data.hash(&mut hasher);
     }
     format!("=_mime_message_{:016x}", hasher.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Header;
+
+    #[test]
+    fn render_still_rejects_a_modelled_preserved_header() {
+        let mut message = Message::parse("From: a@example.com\r\n\r\nx").expect("parse");
+        let header = Header::new("Subject", "spoofed").expect("header");
+        // Bypass the mutation API: this is the renderer's own guard.
+        message.headers.push(header);
+        assert_eq!(
+            message.render().unwrap_err(),
+            Error::DuplicateHeader("Subject".to_string())
+        );
+    }
 }

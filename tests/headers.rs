@@ -127,20 +127,26 @@ fn header_lookup_is_case_insensitive_and_first_wins() {
 fn set_header_replaces_in_place_and_drops_duplicates() {
     let mut message =
         parse("From: a@example.com\r\nX-A: 1\r\nX-B: b\r\nX-A: 2\r\n\r\nx").expect("parse");
-    message.set_header(Header::new("x-a", "new").expect("header"));
+    message
+        .set_header(Header::new("x-a", "new").expect("header"))
+        .expect("set");
     let names: Vec<&str> = message.headers().iter().map(Header::name).collect();
     assert_eq!(names, ["x-a", "X-B"]);
     assert_eq!(message.header("X-A"), Some("new"));
 
     // A new name is appended.
-    message.set_header(Header::new("X-C", "c").expect("header"));
+    message
+        .set_header(Header::new("X-C", "c").expect("header"))
+        .expect("set");
     assert_eq!(message.header("X-C"), Some("c"));
 }
 
 #[test]
 fn push_and_remove_headers() {
     let mut message = parse("From: a@example.com\r\nX-A: 1\r\n\r\nx").expect("parse");
-    message.push_header(Header::new("X-A", "2").expect("header"));
+    message
+        .push_header(Header::new("X-A", "2").expect("header"))
+        .expect("push");
     assert_eq!(message.headers().len(), 2);
     let removed = message.remove_header("X-A").expect("removed");
     assert_eq!(removed.value(), "1");
@@ -157,6 +163,7 @@ fn builder_headers_are_rendered() {
         .expect("to")
         .body("hi")
         .header(Header::new("List-Unsubscribe", "<mailto:u@example.com>").expect("header"))
+        .expect("header")
         .build()
         .expect("build");
     let rendered = raw_of(&message);
@@ -167,21 +174,58 @@ fn builder_headers_are_rendered() {
     );
 }
 
+#[test]
+fn builder_rejects_modelled_header_names() {
+    let error = Message::builder()
+        .from("a@example.com")
+        .expect("from")
+        .to("b@example.com")
+        .expect("to")
+        .header(Header::new("Subject", "spoofed").expect("header"))
+        .expect_err("modelled header");
+    assert_eq!(error, Error::DuplicateHeader("Subject".to_string()));
+}
+
 // ---------------------------------------------------------------------------
 // Safety
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_preserved_header_cannot_smuggle_a_modelled_one() {
+fn modelled_header_names_are_rejected_at_the_mutation_site() {
     let mut message = parse("From: a@example.com\r\n\r\nx").expect("parse");
-    message.push_header(Header::new("Subject", "injected").expect("header"));
     assert_eq!(
-        message.render().unwrap_err(),
+        message
+            .push_header(Header::new("Subject", "injected").expect("header"))
+            .unwrap_err(),
         Error::DuplicateHeader("Subject".to_string())
     );
-    message.push_header(Header::new("content-type", "text/html").expect("header"));
-    let _ = message.remove_header("Subject");
-    assert!(matches!(message.render(), Err(Error::DuplicateHeader(_))));
+    assert_eq!(message.headers(), []);
+
+    let subject = Header::new("subject", "injected").expect("header");
+    assert_eq!(
+        message.set_header(subject).unwrap_err(),
+        Error::DuplicateHeader("subject".to_string())
+    );
+    assert_eq!(message.headers(), []);
+
+    for name in ["From", "To", "content-type", "MIME-Version"] {
+        let header = Header::new(name, "spoofed").expect("header");
+        assert_eq!(
+            header.name(),
+            name,
+            "the error must name the field as supplied"
+        );
+        assert_eq!(
+            message.push_header(header).unwrap_err(),
+            Error::DuplicateHeader(name.to_string())
+        );
+        assert_eq!(message.headers(), []);
+    }
+
+    message
+        .push_header(Header::new("X-Trace", "ok").expect("header"))
+        .expect("non-modelled headers still work");
+    assert_eq!(message.header("X-Trace"), Some("ok"));
 }
 
 #[test]
