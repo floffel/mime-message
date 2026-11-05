@@ -303,6 +303,13 @@ fn preserved_headers_reject_unicode_line_separators() {
             "set_header {separator:?}"
         );
         assert_eq!(message.headers(), []);
+
+        let raw = format!("From: a@example.com\r\nX-A: one\r\n\t{separator}two\r\n\r\nx");
+        assert_eq!(
+            parse(&raw).unwrap_err(),
+            error,
+            "folded raw parse {separator:?}"
+        );
     }
 }
 

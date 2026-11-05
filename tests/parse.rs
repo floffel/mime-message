@@ -158,6 +158,18 @@ fn control_characters_in_headers_are_rejected() {
             byte: 0x00,
         }
     );
+
+    // The parser validates the field exactly as it arrived: a control in a
+    // folded continuation is still part of the raw value, even though unfolding
+    // would turn the line break into a space.
+    let raw = "From: a@example.com\r\nX-Note: ok\r\n\tbad\u{7f}byte\r\n\r\nx";
+    assert_eq!(
+        parse(raw).unwrap_err(),
+        Error::ControlCharacter {
+            name: "X-Note".to_string(),
+            byte: 0x7f,
+        }
+    );
 }
 
 #[test]

@@ -141,12 +141,20 @@ impl Header {
         let name = name.into();
         check_name(&name)?;
         let raw_value = raw_value.into();
-        check_folded_value(&name, &raw_value)?;
-        Ok(Self {
+        check_raw_value(&name, &raw_value)?;
+        Ok(Self::from_wire_after_raw_check(name, raw_value))
+    }
+
+    /// Builds a header from wire fields whose name and raw value have already
+    /// passed [`check_raw_value`].
+    pub(crate) fn from_wire_after_raw_check(name: String, raw_value: String) -> Self {
+        debug_assert!(check_name(&name).is_ok());
+        debug_assert!(check_raw_value(&name, &raw_value).is_ok());
+        Self {
             value: unfold(&raw_value),
             name,
             raw_value,
-        })
+        }
     }
 
     /// Builds a header from wire bytes with an explicit [`Limits`] budget.
@@ -315,9 +323,9 @@ fn check_header_input_size(name: &str, value: &str, limits: &Limits) -> Result<(
 /// carry raw UTF-8 and the cleartext of a parsed message is often exactly that.
 ///
 /// Returning the byte rather than a bare `bool` is what lets
-/// [`Error::ControlCharacter`] say *which* byte was rejected; the folding check
-/// below cannot use this helper, because a CR is legal there when it opens a
-/// fold.
+/// [`Error::ControlCharacter`] say *which* byte was rejected;
+/// [`check_raw_value`] cannot use this helper, because a CR is legal there when
+/// it opens a fold.
 pub(crate) fn forbidden_value_byte(value: &str) -> Option<u8> {
     value.bytes().find(|byte| is_forbidden_byte(*byte))
 }
@@ -362,8 +370,14 @@ fn utf8_lead_byte(ch: char) -> u8 {
     encoded[0]
 }
 
-/// Validates a raw value that may contain CRLF folds.
-pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
+/// Validates a header value exactly as it appears on the wire.
+///
+/// A raw value may contain CRLF only when it opens a fold, and may not contain
+/// other control characters, including the Unicode line separators that are not
+/// ASCII control bytes. Every wire-value path uses this one predicate:
+/// [`Header::from_wire`], the parser's header-block reader and the renderer's
+/// preserved-header guard.
+pub(crate) fn check_raw_value(name: &str, raw: &str) -> Result<()> {
     let bytes = raw.as_bytes();
     if bytes.starts_with(b"\r\n") {
         return Err(Error::control_value(name, b'\r'));
@@ -414,11 +428,11 @@ pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
 ///
 /// Preserved headers are re-emitted byte for byte, so this is the shared guard
 /// for both the mutation APIs and the renderer: controls are rejected exactly as
-/// in [`check_folded_value`], and every physical line (`name:` on the first line,
+/// in [`check_raw_value`], and every physical line (`name:` on the first line,
 /// any folded continuation afterwards) must fit RFC 5322 §2.1.1's 998-octet
 /// hard limit.
 pub(crate) fn check_rendered_header(name: &str, raw: &str) -> Result<()> {
-    check_folded_value(name, raw)?;
+    check_raw_value(name, raw)?;
 
     let mut lines = raw.split("\r\n");
     let first = lines.next().unwrap_or(raw);
