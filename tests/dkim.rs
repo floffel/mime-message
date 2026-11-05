@@ -127,7 +127,10 @@ fn ed25519_sign_then_verify_roundtrip() {
     let key = SigningKey::from_ed25519_seed_base64("nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=")
         .expect("seed");
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     let verified = dkim::verify(&raw, &key.verifying_key()).expect("verify");
@@ -139,7 +142,10 @@ fn ed25519_sign_then_verify_roundtrip() {
 fn rsa_sign_then_verify_roundtrip() {
     let key = rsa_signing_key();
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "rsa"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "rsa").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     // Verify with the public key from the DNS record, as a receiver would.
@@ -154,7 +160,9 @@ fn every_canonicalization_pair_round_trips() {
     let key = SigningKey::from_ed25519_seed(&[9u8; 32]);
     for header in [Canonicalization::Simple, Canonicalization::Relaxed] {
         for body in [Canonicalization::Simple, Canonicalization::Relaxed] {
-            let params = SignParams::new("example.com", "sel").canonicalization(header, body);
+            let params = SignParams::new("example.com", "sel")
+                .expect("params")
+                .canonicalization(header, body);
             let signed = sample_message().sign(&key, &params).expect("sign");
             let raw = String::from_utf8(signed).expect("utf-8");
             assert!(
@@ -169,6 +177,7 @@ fn every_canonicalization_pair_round_trips() {
 fn relaxed_survives_the_changes_it_is_meant_to_absorb() {
     let key = SigningKey::from_ed25519_seed(&[11u8; 32]);
     let params = SignParams::new("example.com", "sel")
+        .expect("params")
         .canonicalization(Canonicalization::Relaxed, Canonicalization::Relaxed);
     let signed = sample_message().sign(&key, &params).expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
@@ -192,6 +201,7 @@ fn relaxed_survives_the_changes_it_is_meant_to_absorb() {
 fn simple_rejects_refolding() {
     let key = SigningKey::from_ed25519_seed(&[13u8; 32]);
     let params = SignParams::new("example.com", "sel")
+        .expect("params")
         .canonicalization(Canonicalization::Simple, Canonicalization::Simple);
     let signed = sample_message().sign(&key, &params).expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
@@ -202,7 +212,9 @@ fn simple_rejects_refolding() {
 #[test]
 fn signing_is_deterministic_and_timestamped_on_request() {
     let key = SigningKey::from_ed25519_seed(&[3u8; 32]);
-    let params = SignParams::new("example.com", "sel").timestamp(1_700_000_000);
+    let params = SignParams::new("example.com", "sel")
+        .expect("params")
+        .timestamp(1_700_000_000);
     let first = sample_message().sign(&key, &params).expect("sign");
     let second = sample_message().sign(&key, &params).expect("sign");
     assert_eq!(first, second);
@@ -222,7 +234,10 @@ fn duplicate_and_preserved_headers_are_all_signed() {
         .expect("push");
     let key = SigningKey::from_ed25519_seed(&[17u8; 32]);
     let signed = message
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     // The `h=` tag may be folded between its names; read it through the parser
@@ -268,7 +283,10 @@ fn bcc_recipients_are_not_signed_because_they_are_not_sent() {
         .build()
         .expect("build");
     let signed = message
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert!(!raw.contains("secret@example.com"));
@@ -293,7 +311,10 @@ fn html_with_inline_parts_signs_and_verifies() {
         .build()
         .expect("build");
     let signed = message
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
@@ -302,7 +323,10 @@ fn html_with_inline_parts_signs_and_verifies() {
 #[test]
 fn explicit_header_list_always_covers_from() {
     let key = SigningKey::from_ed25519_seed(&[29u8; 32]);
-    let params = SignParams::new("example.com", "sel").signed_headers(["Subject"]);
+    let params = SignParams::new("example.com", "sel")
+        .expect("params")
+        .signed_headers(["Subject"])
+        .expect("signed headers");
     let signed = sample_message().sign(&key, &params).expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert!(raw.contains("h=from:subject;"));
@@ -323,7 +347,10 @@ fn a_four_hundred_header_message_folds_every_dkim_line_under_78_columns() {
             .expect("push header");
     }
     let signed = message
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
 
@@ -473,7 +500,7 @@ fn a_key_of_the_wrong_type_cannot_verify() {
     let rsa = VerifyingKey::from_dns_record(RFC8463_RSA_RECORD).expect("record");
     let ed = SigningKey::from_ed25519_seed(&[31u8; 32]);
     let signed = sample_message()
-        .sign(&ed, &SignParams::new("example.com", "sel"))
+        .sign(&ed, &SignParams::new("example.com", "sel").expect("params"))
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert_eq!(
@@ -486,7 +513,10 @@ fn a_key_of_the_wrong_type_cannot_verify() {
 fn a_modified_signature_is_rejected() {
     let key = SigningKey::from_ed25519_seed(&[37u8; 32]);
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "sel"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     // Flip one base64 character of the b= value.
@@ -503,14 +533,14 @@ fn signatures_of_a_message_are_listed_in_order() {
     let ed = SigningKey::from_ed25519_seed(&[41u8; 32]);
     let mut raw = String::from_utf8(
         sample_message()
-            .sign(&ed, &SignParams::new("example.com", "one"))
+            .sign(&ed, &SignParams::new("example.com", "one").expect("params"))
             .expect("sign"),
     )
     .expect("utf-8");
     // Sign the already signed message again: two DKIM-Signature fields.
     let re_signed = Message::parse(&raw)
         .expect("parse")
-        .sign(&ed, &SignParams::new("example.com", "two"));
+        .sign(&ed, &SignParams::new("example.com", "two").expect("params"));
     raw = String::from_utf8(re_signed.expect("sign")).expect("utf-8");
     let headers = dkim::signatures(&raw).expect("signatures");
     assert_eq!(headers.len(), 2);
@@ -570,7 +600,10 @@ fn dkim_is_send_sync_and_thread_safe() {
         handles.push(std::thread::spawn(move || {
             for _ in 0..8 {
                 let signed = sample_message()
-                    .sign(&key, &SignParams::new("example.com", "sel"))
+                    .sign(
+                        &key,
+                        &SignParams::new("example.com", "sel").expect("params"),
+                    )
                     .expect("sign");
                 let raw = String::from_utf8(signed).expect("utf-8");
                 dkim::verify(&raw, &public).expect("verify");
@@ -592,7 +625,10 @@ fn a_pkcs8_rsa_pem_is_accepted() {
     assert_eq!(key.algorithm().as_str(), "rsa-sha256");
     // Signing with it works end to end.
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "pkcs8"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "pkcs8").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
@@ -663,7 +699,9 @@ fn a_small_rsa_key_in_a_record_is_rejected() {
 fn identity_and_other_tags_survive_the_round_trip() {
     let key = SigningKey::from_ed25519_seed(&[73u8; 32]);
     let params = SignParams::new("example.com", "sel")
+        .expect("params")
         .identity("@example.com")
+        .expect("identity")
         .timestamp(1_700_000_001);
     let signed = sample_message().sign(&key, &params).expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
@@ -672,6 +710,82 @@ fn identity_and_other_tags_survive_the_round_trip() {
     assert_eq!(header.identity.as_deref(), Some("@example.com"));
     assert_eq!(header.timestamp, Some(1_700_000_001));
     assert_eq!(header.body_length, None);
+    assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
+}
+
+#[test]
+fn dkim_parameters_reject_header_injection() {
+    let key = SigningKey::from_ed25519_seed(&[79u8; 32]);
+    let message = sample_message();
+
+    let domain = SignParams::new("example.com\r\nBcc: attacker@example.com", "sel").unwrap_err();
+    assert_eq!(domain, Error::HeaderInjection("DKIM domain"));
+    let empty_domain = SignParams::new("", "sel").unwrap_err();
+    assert_eq!(empty_domain, Error::EmptyHeader("DKIM domain"));
+
+    let selector = SignParams::new("example.com", "sel; x=y").unwrap_err();
+    assert_eq!(selector, Error::HeaderInjection("DKIM selector"));
+    let empty_selector = SignParams::new("example.com", "").unwrap_err();
+    assert_eq!(empty_selector, Error::EmptyHeader("DKIM selector"));
+
+    let identity = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@example.com\r\nBcc: attacker@example.com")
+        .unwrap_err();
+    assert_eq!(identity, Error::HeaderInjection("DKIM identity"));
+
+    let signed_header = SignParams::new("example.com", "sel")
+        .expect("params")
+        .signed_headers(["Subject", "X-Bad:Injected"])
+        .unwrap_err();
+    assert_eq!(signed_header, Error::HeaderInjection("DKIM signed header"));
+
+    let folded_header = SignParams::new("example.com", "sel")
+        .expect("params")
+        .signed_headers([" Subject\r\n"])
+        .unwrap_err();
+    assert_eq!(folded_header, Error::HeaderInjection("DKIM signed header"));
+
+    let null = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@example.com\0")
+        .unwrap_err();
+    assert_eq!(null, Error::HeaderInjection("DKIM identity"));
+
+    let mut mutated = SignParams::new("example.com", "sel").expect("params");
+    mutated.domain = "example.com\r\nBcc: attacker@example.com".to_string();
+    assert_eq!(
+        message.sign(&key, &mutated).unwrap_err(),
+        Error::HeaderInjection("DKIM domain")
+    );
+
+    let mut mutated = SignParams::new("example.com", "sel").expect("params");
+    mutated.signed_headers = Some(vec!["Subject:Injected".to_string()]);
+    assert_eq!(
+        message.sign(&key, &mutated).unwrap_err(),
+        Error::HeaderInjection("DKIM signed header")
+    );
+}
+
+#[test]
+fn dkim_parameters_accept_normal_values() {
+    let key = SigningKey::from_ed25519_seed(&[83u8; 32]);
+    let params = SignParams::new("example.com", "sel")
+        .expect("domain and selector")
+        .identity("@example.com")
+        .expect("identity")
+        .signed_headers(["Subject", "Message-ID"])
+        .expect("signed headers");
+    let signed = sample_message().sign(&key, &params).expect("sign");
+    let raw = String::from_utf8(signed).expect("utf-8");
+    let signature = &dkim::signatures(&raw).expect("signatures")[0];
+    assert_eq!(signature.domain, "example.com");
+    assert_eq!(signature.selector, "sel");
+    assert_eq!(signature.identity.as_deref(), Some("@example.com"));
+    assert!(signature
+        .signed_headers
+        .iter()
+        .any(|name| name == "subject"));
     assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
 }
 
@@ -735,7 +849,10 @@ fn signatures_of_the_wrong_length_are_malformed() {
 fn a_broken_signature_does_not_hide_a_good_one() {
     let key = SigningKey::from_ed25519_seed(&[47u8; 32]);
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "good"))
+        .sign(
+            &key,
+            &SignParams::new("example.com", "good").expect("params"),
+        )
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     // Prepend a signature that cannot even be parsed (no h= tag).

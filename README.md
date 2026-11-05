@@ -228,7 +228,10 @@ canonicalization for headers and body, signing and verification:
 use mime_message::dkim::{self, SignParams, SigningKey, VerifyingKey};
 
 let key = SigningKey::from_pem(&std::fs::read_to_string("dkim-private.pem")?)?;
-let signed = message.sign(&key, &SignParams::new("example.com", "mail").timestamp(1_700_000_000))?;
+let signed = message.sign(
+    &key,
+    &SignParams::new("example.com", "mail")?.timestamp(1_700_000_000),
+)?;
 
 // Verification runs over the received bytes: re-rendering destroys a
 // signature, so it takes `&str`, not a `Message`.

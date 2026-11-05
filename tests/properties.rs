@@ -685,7 +685,7 @@ mod dkim_properties {
         fn body_hash_matches_the_rfc(body in any::<String>()) {
             let key = SigningKey::from_ed25519_seed(&[61u8; 32]);
             let signed = message_with(body.clone())
-                .sign(&key, &SignParams::new("example.com", "sel"))
+                .sign(&key, &SignParams::new("example.com", "sel")?)
                 .expect("sign");
             let raw = String::from_utf8_lossy(&signed);
             let transmitted = transmitted_body(&raw);
@@ -699,7 +699,7 @@ mod dkim_properties {
         fn sign_and_verify_any_body(body in any::<String>()) {
             let key = SigningKey::from_ed25519_seed(&[63u8; 32]);
             let signed = message_with(body)
-                .sign(&key, &SignParams::new("example.com", "sel"))
+                .sign(&key, &SignParams::new("example.com", "sel")?)
                 .expect("sign");
             let raw = String::from_utf8_lossy(&signed);
             prop_assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
@@ -710,7 +710,7 @@ mod dkim_properties {
         fn appended_body_text_breaks_the_signature(body in "[ -~]{0,40}", extra in "[!-~]{1,10}") {
             let key = SigningKey::from_ed25519_seed(&[67u8; 32]);
             let signed = message_with(body)
-                .sign(&key, &SignParams::new("example.com", "sel"))
+                .sign(&key, &SignParams::new("example.com", "sel")?)
                 .expect("sign");
             let raw = String::from_utf8_lossy(&signed).into_owned();
             let tampered = format!("{raw}{extra}");
@@ -730,7 +730,7 @@ mod dkim_properties {
                 )
                 .expect("push");
             let signed = message
-                .sign(&key, &SignParams::new("example.com", "sel"))
+                .sign(&key, &SignParams::new("example.com", "sel")?)
                 .expect("sign");
             let raw = String::from_utf8_lossy(&signed).into_owned();
             prop_assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
