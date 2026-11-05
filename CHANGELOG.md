@@ -204,6 +204,13 @@ manifest disagree.
   leaves the `cid:` reference unresolved on failure, and escapes replacement URIs.
   Pinned by focused tests for quotes, control characters, invalid parameters and safe
   percent-encoded parameters.
+- **A malformed quoted-printable escape no longer deletes a lone CR or bare LF.**
+  The decoder treated `=` followed by CR, and `=` followed by LF, as soft line
+  breaks, so `decode_quoted_printable("a=\rb")` returned `ab`. Only `=` CRLF is a
+  soft break now; `=` CR, `=` CR followed by another byte, and `=` LF are kept
+  literal, matching the documented malformed-escape behaviour. Pinned by the
+  quoted-printable boundary tests in `src/transfer.rs` and the property test
+  `quoted_printable_malformed_line_endings_stay_literal`.
 
 - **A `ControlCharacter` rejection says which field and which byte, not just a name.**
   The variant was `ControlCharacter(String)` and every construction site passed the header *name*

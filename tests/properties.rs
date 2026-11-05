@@ -398,6 +398,27 @@ proptest! {
         prop_assert!(decoded.len() <= raw.len());
     }
 
+    /// A malformed escape for a line break stays literal: only `=` CRLF is a
+    /// soft break.
+    #[test]
+    fn quoted_printable_malformed_line_endings_stay_literal(
+        prefix in "[^=\\r\\n]{0,20}",
+        suffix in "[^=\\r\\n]{0,20}",
+    ) {
+        for raw in [
+            format!("{prefix}=\r{suffix}"),
+            format!("{prefix}=\rX{suffix}"),
+            format!("{prefix}=\n{suffix}"),
+        ] {
+            prop_assert_eq!(
+                mime_message::transfer::decode_quoted_printable(&raw),
+                raw.as_bytes(),
+                "{}",
+                raw
+            );
+        }
+    }
+
     /// A parsed message can always be rendered again and re-parsed to the same
     /// value (idempotent re-rendering).
     #[test]
