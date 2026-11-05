@@ -682,6 +682,9 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
                 return Err(Error::invalid_mailbox(raw));
             };
             let close = open + close_rel;
+            if skip_ws_and_comments(text, close + 1) != text.len() {
+                return Err(Error::invalid_mailbox(raw));
+            }
             (text[..open].trim(), text[open + 1..close].trim())
         }
         None => ("", text),
@@ -717,6 +720,10 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
         },
         address: address.to_string(),
     })
+}
+
+pub(crate) fn parse_mailbox(raw: &str) -> Result<Mailbox> {
+    parse_single_address(raw, "mailbox")
 }
 
 pub(crate) fn validate_address(address: &str) -> Result<()> {

@@ -152,37 +152,7 @@ impl Mailbox {
         if raw.is_empty() {
             return Err(Error::EmptyHeader("mailbox"));
         }
-        // The `<` that starts the address must be outside a quoted display
-        // name: `"Doe <Jr>" <a@b>` has two of them.
-        if let Some(start) = parse::angle_open(raw) {
-            let Some(end) = raw.rfind('>') else {
-                return Err(Error::invalid_mailbox(raw));
-            };
-            // Brackets in the wrong order (">...<") must not panic the slice.
-            if end <= start + 1 {
-                return Err(Error::invalid_mailbox(raw));
-            }
-            let address = raw[start + 1..end].trim().to_string();
-            parse::validate_address(&address)?;
-            let name = parse::unquote(raw[..start].trim());
-            if name.chars().any(char::is_control) {
-                return Err(Error::invalid_mailbox(raw));
-            }
-            let name = name.trim();
-            return Ok(Self {
-                name: if name.is_empty() {
-                    None
-                } else {
-                    Some(name.to_string())
-                },
-                address,
-            });
-        }
-        parse::validate_address(raw)?;
-        Ok(Self {
-            name: None,
-            address: raw.to_string(),
-        })
+        parse::parse_mailbox(raw)
     }
 }
 
