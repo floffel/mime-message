@@ -94,12 +94,21 @@ fn is_word_start(input: &str, index: usize) -> bool {
 fn decode_word(input: &str, start: usize) -> Option<(String, usize)> {
     let body_start = start + 2;
     let charset_end = body_start + input[body_start..].find('?')?;
-    let charset = &input[body_start..charset_end];
+    let raw_charset = &input[body_start..charset_end];
 
-    if charset.is_empty()
-        || charset.len() > MAX_CHARSET_LEN
-        || !charset.bytes().all(|b| b.is_ascii_graphic())
+    if raw_charset.is_empty()
+        || raw_charset.len() > MAX_CHARSET_LEN
+        || !raw_charset.bytes().all(|b| b.is_ascii_graphic())
     {
+        return None;
+    }
+
+    // RFC 2231 §5 allows `charset*language` in an encoded-word label; only the
+    // charset part selects the decoder.
+    let charset = raw_charset
+        .split_once('*')
+        .map_or(raw_charset, |(charset, _lang)| charset);
+    if charset.is_empty() {
         return None;
     }
 
@@ -193,6 +202,12 @@ mod tests {
             decode("=?iso-8859-1?Q?Gr=FC=DFe?= =?UTF-8?Q?=E2=82=AC?="),
             "Grüße€"
         );
+    }
+
+    #[test]
+    fn rfc2231_language_tag_in_charset_label_is_ignored() {
+        assert_eq!(decode("=?iso-8859-1*de?Q?Gr=FC=DFe?="), "Grüße");
+        assert_eq!(decode("=?iso-8859-1*de?B?R3L832U=?="), "Grüße");
     }
 
     #[test]

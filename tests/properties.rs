@@ -303,6 +303,33 @@ proptest! {
         prop_assert_eq!(mime_message::rfc2047::decode(&input), format!("a{gap}{tail}"));
     }
 
+    /// RFC 2231 §5 allows an encoded-word charset label to carry a language
+    /// tag (`charset*lang`). Only the part before `*` selects the decoder, so
+    /// appending a tag to a supported charset must not change the text.
+    #[test]
+    fn rfc2047_ignores_language_tag_in_charset_label(
+        charset in prop::sample::select(vec![
+            "utf-8",
+            "iso-8859-1",
+            "iso-8859-2",
+            "windows-1252",
+            "shift_jis",
+            "gbk",
+            "big5",
+            "koi8-r",
+            "us-ascii",
+        ]),
+        lang in "[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8}){0,3}",
+        payload in "[A-Za-z0-9._-]{0,24}",
+    ) {
+        let plain = format!("=?{charset}?Q?{payload}?=");
+        let tagged = format!("=?{charset}*{lang}?Q?{payload}?=");
+        prop_assert_eq!(
+            mime_message::rfc2047::decode(&tagged),
+            mime_message::rfc2047::decode(&plain),
+        );
+    }
+
     /// Base64 decoding is total, never allocates more than the input, and
     /// rejects without panicking.
     #[test]
