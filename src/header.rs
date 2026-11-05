@@ -9,6 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::Limits;
+use std::hash::{Hash, Hasher};
 
 /// RFC 5322 §2.1.1: a physical header line MUST be at most 998 octets.
 const MAX_HEADER_LINE_BYTES: usize = 998;
@@ -28,7 +29,11 @@ const MAX_HEADER_LINE_BYTES: usize = 998;
 /// assert_eq!(header.raw_value(), " <mailto:unsub@example.com>");
 /// # Ok::<(), mime_message::Error>(())
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Headers compare and hash by field identity: their names ASCII
+/// case-insensitively and their unfolded values. Name casing, raw spacing and
+/// folding are preserved for rendering, but do not make two views of the same
+/// header field different.
+#[derive(Debug, Clone)]
 pub struct Header {
     /// Field name with its original casing.
     name: String,
@@ -41,8 +46,10 @@ pub struct Header {
 impl Header {
     /// Creates a header field from a name and an unfolded value.
     ///
-    /// The value is trimmed; empty values are allowed (`X-Empty:` is a valid
-    /// header). Line breaks are rejected: a header cannot smuggle a second one.
+    /// The value is trimmed of ASCII space and horizontal tab characters; empty
+    /// values are allowed (`X-Empty:` is a valid header). Other whitespace,
+    /// including Unicode whitespace such as NBSP, is preserved. Line breaks are
+    /// rejected: a header cannot smuggle a second one.
     ///
     /// ```
     /// use mime_message::Header;
@@ -67,7 +74,7 @@ impl Header {
         check_name(&name)?;
         let value = value.into();
         check_value(&name, &value)?;
-        let trimmed = value.trim();
+        let trimmed = trim_header_sp(&value);
         let raw_value = if trimmed.is_empty() {
             String::new()
         } else {
@@ -230,6 +237,21 @@ impl Header {
     }
 }
 
+impl PartialEq for Header {
+    fn eq(&self, other: &Self) -> bool {
+        self.is(&other.name) && self.value == other.value
+    }
+}
+
+impl Eq for Header {}
+
+impl Hash for Header {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.to_ascii_lowercase().hash(state);
+        self.value.hash(state);
+    }
+}
+
 /// Unfolds a raw value: continuation lines join with one space.
 pub(crate) fn unfold(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -240,7 +262,11 @@ pub(crate) fn unfold(raw: &str) -> String {
         }
         out.push_str(line);
     }
-    out.trim().to_string()
+    trim_header_sp(&out).to_string()
+}
+
+fn trim_header_sp(value: &str) -> &str {
+    value.trim_matches(|ch| ch == ' ' || ch == '\t')
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -407,6 +433,7 @@ pub(crate) fn check_rendered_header(name: &str, raw: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn unfold_joins_continuations_with_one_space() {
@@ -449,6 +476,29 @@ mod tests {
             Header::new("X:A", "x"),
             Err(Error::MalformedHeader { .. })
         ));
+    }
+
+    #[test]
+    fn new_trims_only_ascii_space_and_tab() {
+        let header = Header::new("Subject", "\u{a0}Rechnung").unwrap();
+        assert_eq!(header.value(), "\u{a0}Rechnung");
+        assert_eq!(header.raw_value(), " \u{a0}Rechnung");
+
+        let header = Header::new("Subject", "\t\u{2000}Rechnung ").unwrap();
+        assert_eq!(header.value(), "\u{2000}Rechnung");
+    }
+
+    #[test]
+    fn equality_and_hash_match_header_identity() {
+        let built = Header::new("x-a", "  y  ").unwrap();
+        let parsed = Header::from_wire("X-A", "  y  ").unwrap();
+        assert_eq!(built, parsed);
+        assert_eq!(Header::new("X-A", "y").unwrap(), built);
+
+        let mut seen = HashSet::new();
+        seen.insert(built);
+        seen.insert(parsed);
+        assert_eq!(seen.len(), 1);
     }
 
     #[test]
