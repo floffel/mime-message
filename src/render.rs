@@ -152,7 +152,8 @@ fn push_part_header(out: &mut String, name: &'static str, value: &str) -> Result
     if has_forbidden_chars(value) {
         return Err(Error::HeaderInjection(name));
     }
-    out.push_str(&fold_header(name, value));
+    let folded = fold_header(name, value)?;
+    out.push_str(&folded);
     out.push_str(CRLF);
     Ok(())
 }
@@ -384,7 +385,7 @@ fn push_header(out: &mut String, name: &'static str, value: &str, _foldable: boo
     if has_forbidden_chars(value) {
         return Err(Error::HeaderInjection(name));
     }
-    let folded = fold_header(name, value);
+    let folded = fold_header(name, value)?;
     out.push_str(&folded);
     out.push_str(CRLF);
     Ok(())
@@ -403,8 +404,10 @@ fn has_forbidden_chars(value: &str) -> bool {
 ///
 /// Folding replaces one space with CRLF + space; since unfolding removes only
 /// the CRLF, the value round-trips byte for byte. Runs of whitespace are never
-/// used as a fold point, so they survive unchanged.
-fn fold_header(name: &str, value: &str) -> String {
+/// used as a fold point, so they survive unchanged. A single token longer than
+/// the budget cannot be folded without changing the value, so it is rejected
+/// rather than emitted on an over-long line.
+fn fold_header(name: &str, value: &str) -> Result<String> {
     let tokens: Vec<&str> = value.split(' ').collect();
     let mut out = format!("{name}: ");
     let mut line_len = header_len(name) + 2;
@@ -425,8 +428,14 @@ fn fold_header(name: &str, value: &str) -> String {
         }
         out.push_str(token);
         line_len += header_len(token);
+        if line_len > MAX_LINE {
+            return Err(Error::LimitExceeded {
+                what: "header line length",
+                limit: MAX_LINE,
+            });
+        }
     }
-    out
+    Ok(out)
 }
 
 /// Header folding measures characters, not UTF-8 bytes.

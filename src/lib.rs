@@ -351,8 +351,9 @@ impl Message {
     /// # Errors
     ///
     /// Fails on header injection, missing headers, no recipients, an empty
-    /// `Content-ID`, and a `Content-ID` that would end its own `msg-id` early
-    /// ([`Error::ControlCharacter`]).
+    /// `Content-ID`, a `Content-ID` that would end its own `msg-id` early
+    /// ([`Error::ControlCharacter`]), and a header value whose single token is
+    /// longer than the 78-character header line budget ([`Error::LimitExceeded`]).
     pub fn render(&self) -> Result<Vec<u8>> {
         render::render(self)
     }
