@@ -201,6 +201,11 @@ manifest disagree.
   parsed 999-octet header with `Error::LimitExceeded` instead of silently
   emitting it. Pinned by the name, value and combined boundary cases in
   `tests/rfc_limits.rs`.
+- **Attachment filenames preserve trailing whitespace through render→parse.** The
+  quoted `filename` parameter and the RFC 2231 extended filename keep trailing
+  ASCII space and NBSP content instead of relying on header trimming to strip
+  it, so `Attachment::new("report ", …)` and `Attachment::new("report\u{a0}", …)`
+  round-trip unchanged.
 - **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with

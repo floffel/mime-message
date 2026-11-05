@@ -259,6 +259,36 @@ fn long_non_ascii_attachment_filename_uses_rfc2231_continuations() {
 }
 
 #[test]
+fn attachment_filename_preserves_trailing_ascii_space() {
+    let filename = "report ".to_string();
+    let msg = simple().clone_with_attachment(Attachment::new(
+        filename.clone(),
+        "application/octet-stream",
+        b"data".to_vec(),
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    assert!(text.contains("filename=\"report \""), "{text}");
+    let parsed = mime_message::parse(&text).unwrap();
+    assert_eq!(parsed.attachments[0].filename, filename);
+}
+
+#[test]
+fn attachment_filename_preserves_trailing_nbsp() {
+    let filename = "report\u{a0}".to_string();
+    let msg = simple().clone_with_attachment(Attachment::new(
+        filename.clone(),
+        "application/octet-stream",
+        b"data".to_vec(),
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    assert!(text.contains("filename*0*=UTF-8''report%C2%A0"), "{text}");
+    let parsed = mime_message::parse(&text).unwrap();
+    assert_eq!(parsed.attachments[0].filename, filename);
+}
+
+#[test]
 fn attachment_filename_cannot_inject_headers() {
     let msg = simple().clone_with_attachment(Attachment::new(
         "evil\"\r\nX-Injected: 1",
