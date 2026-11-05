@@ -192,9 +192,12 @@ pub fn encode_quoted_printable(input: &str) -> String {
         }
 
         // A space or tab that ends the line is invisible in transit, so it is
-        // only ever emitted as an escape.
+        // only ever emitted as an escape. That includes the output line: a
+        // literal that exactly fills the line would otherwise sit immediately
+        // before the soft line break.
         let trailing = matches!(byte, b' ' | b'\t')
-            && matches!(bytes.get(index + 1), None | Some(b'\r' | b'\n'));
+            && (matches!(bytes.get(index + 1), None | Some(b'\r' | b'\n'))
+                || column + 1 == MAX_QUOTED_PRINTABLE_LINE - 1);
         let literal = !trailing
             && (matches!(byte, b' ' | b'\t') || (33..=126).contains(&byte))
             && byte != b'=';

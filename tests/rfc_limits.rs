@@ -205,6 +205,23 @@ fn the_encoder_escapes_what_the_wire_would_eat() {
     assert_eq!(transfer::decode_quoted_printable(&encoded), text.as_bytes());
 }
 
+#[test]
+fn the_encoder_escapes_whitespace_before_a_soft_break_at_the_boundary() {
+    let prefix = "a".repeat(MAX_QUOTED_PRINTABLE_LINE - 2);
+    for (whitespace, escape) in [(' ', "=20"), ('\t', "=09")] {
+        let input = format!("{prefix}{whitespace}b");
+        let encoded = transfer::encode_quoted_printable(&input);
+        assert_eq!(encoded, format!("{prefix}=\r\n{escape}b"));
+        assert!(encoded.split("\r\n").all(|line| {
+            line.len() <= MAX_QUOTED_PRINTABLE_LINE && !line.ends_with(' ') && !line.ends_with('\t')
+        }));
+        assert_eq!(
+            transfer::decode_quoted_printable(&encoded),
+            input.as_bytes()
+        );
+    }
+}
+
 proptest! {
     #[test]
     fn quoted_printable_round_trips_any_text(text in any::<String>()) {
