@@ -225,9 +225,24 @@ fn duplicate_and_preserved_headers_are_all_signed() {
         .sign(&key, &SignParams::new("example.com", "sel"))
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
-    assert!(raw.contains(
-        "h=From:To:Subject:Date:Message-ID:X-Trace:X-Trace:MIME-Version:Content-Type:Content-Transfer-Encoding;"
-    ));
+    // The `h=` tag may be folded between its names; read it through the parser
+    // so the inserted FWS does not matter.
+    let signature = &dkim::signatures(&raw).expect("signature")[0];
+    assert_eq!(
+        signature.signed_headers,
+        [
+            "from",
+            "to",
+            "subject",
+            "date",
+            "message-id",
+            "x-trace",
+            "x-trace",
+            "mime-version",
+            "content-type",
+            "content-transfer-encoding"
+        ]
+    );
     assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
 
     // Removing one of the duplicated headers must break the signature.
@@ -290,6 +305,50 @@ fn explicit_header_list_always_covers_from() {
     let signed = sample_message().sign(&key, &params).expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     assert!(raw.contains("h=from:subject;"));
+    assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
+}
+
+/// A message with hundreds of header occurrences builds an `h=` tag far longer
+/// than one line. Every emitted `DKIM-Signature` line must stay under the
+/// 78-column recommendation (RFC 5322 §2.1.1), and the signature must still
+/// verify after folding inside the tag.
+#[test]
+fn a_four_hundred_header_message_folds_every_dkim_line_under_78_columns() {
+    let key = SigningKey::from_ed25519_seed(&[31u8; 32]);
+    let mut message = sample_message();
+    for index in 0..400 {
+        message
+            .push_header(Header::new("X-Received-Chain", format!("{index}")).expect("header"))
+            .expect("push header");
+    }
+    let signed = message
+        .sign(&key, &SignParams::new("example.com", "sel"))
+        .expect("sign");
+    let raw = String::from_utf8(signed).expect("utf-8");
+
+    let (head, _) = raw.split_once("\r\n\r\n").expect("header/body split");
+    let signature: String = {
+        let mut lines = head.split("\r\n");
+        let mut collected = vec![lines.next().expect("first line")];
+        for line in lines {
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                break;
+            }
+            collected.push(line);
+        }
+        collected.join("\r\n")
+    };
+    assert!(
+        signature.contains("h="),
+        "the signature must carry an h= tag"
+    );
+    for line in signature.split("\r\n") {
+        assert!(
+            line.len() <= 78,
+            "DKIM-Signature line of {} columns: {line:?}",
+            line.len()
+        );
+    }
     assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
 }
 
