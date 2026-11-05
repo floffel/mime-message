@@ -940,7 +940,7 @@ fn a_broken_signature_does_not_hide_a_good_one() {
 fn a_malformed_signature_does_not_hide_a_matching_mismatch() {
     let key = SigningKey::from_ed25519_seed(&[49u8; 32]);
     let signed = sample_message()
-        .sign(&key, &SignParams::new("example.com", "good"))
+        .sign(&key, &SignParams::new("example.com", "good").unwrap())
         .expect("sign");
     let raw = String::from_utf8(signed).expect("utf-8");
     let tampered = raw.replace("Anbei die Rechnung.", "Anbei die Rechnung?");
