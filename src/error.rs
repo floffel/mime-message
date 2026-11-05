@@ -124,7 +124,8 @@ pub enum Error {
     ///
     /// `part` names the entity whose header failed, in the same depth-first
     /// numbering as [`Error::MalformedHeader`], and `text` is the offending
-    /// value, truncated to 120 bytes.
+    /// value, truncated to 120 bytes. A `part` of 0 means the value was checked
+    /// outside a message, through [`cid::try_data_uri`](crate::cid::try_data_uri).
     ///
     /// ```
     /// use mime_message::{parse, Error};

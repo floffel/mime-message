@@ -166,8 +166,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Lookups strip the `cid:` scheme and angle brackets, so `logo`, `cid:logo` and
 `cid:<logo>` find the same part; comparison is case-sensitive (RFC 2392).
-Unresolved references are left untouched instead of being dropped, and
-`cid::data_uri()` is there when a caller wants the `data:` form explicitly.
+Unresolved references are left untouched instead of being dropped. The built-in
+rewrite validates the part's `Content-Type`, percent-encodes `data:` parameters
+and HTML-escapes the replacement before inserting it into markup;
+`cid::try_data_uri()` is there when a caller wants to handle a bad media type
+explicitly, and `cid::data_uri()` remains the infallible builder with an
+`application/octet-stream` fallback.
 
 ### Limits and safety
 
