@@ -91,16 +91,18 @@ fn nth_payload_byte(input: &str, n: usize) -> Option<usize> {
 
 /// Decodes a quoted-printable body.
 ///
-/// Soft line breaks (`=` at the end of a line) are removed, `=XX` becomes the
-/// byte `0xXX`, and everything else is copied verbatim. Malformed escapes are
-/// kept as literal text instead of failing the parse — quoted-printable damage
-/// is common and never a security boundary.
+/// Soft line breaks (`=` immediately followed by CRLF) are removed, `=XX`
+/// becomes the byte `0xXX`, and everything else is copied verbatim. A `=`
+/// followed by a bare LF or a lone CR is malformed and kept literal. Malformed
+/// escapes are kept as literal text instead of failing the parse —
+/// quoted-printable damage is common and never a security boundary.
 ///
 /// ```
 /// use mime_message::transfer;
 ///
 /// assert_eq!(transfer::decode_quoted_printable("Gr=C3=BC=C3=9Fe"), "Grüße".as_bytes());
 /// assert_eq!(transfer::decode_quoted_printable("a=\r\nb"), b"ab");
+/// assert_eq!(transfer::decode_quoted_printable("a=\rb"), b"a=\rb");
 /// assert_eq!(transfer::decode_quoted_printable("100% =3D 100%"), b"100% = 100%");
 /// ```
 #[must_use]
@@ -117,14 +119,7 @@ pub fn decode_quoted_printable(input: &str) -> Vec<u8> {
         match bytes.get(i + 1) {
             // Trailing '=' means the message was truncated: drop it.
             None => break,
-            Some(b'\r') => {
-                i += if bytes.get(i + 2) == Some(&b'\n') {
-                    3
-                } else {
-                    2
-                };
-            }
-            Some(b'\n') => i += 2,
+            Some(b'\r') if bytes.get(i + 2) == Some(&b'\n') => i += 3,
             Some(high) => {
                 if let Some(value) = hex_pair(*high, bytes.get(i + 2)) {
                     out.push(value);
@@ -318,8 +313,7 @@ mod tests {
     fn quoted_printable_soft_breaks_and_escapes() {
         assert_eq!(decode_quoted_printable(""), b"");
         assert_eq!(decode_quoted_printable("a=20b"), b"a b");
-        assert_eq!(decode_quoted_printable("a=\nb"), b"ab");
-        assert_eq!(decode_quoted_printable("a=\rb"), b"ab");
+        assert_eq!(decode_quoted_printable("a=\r\nb"), b"ab");
         assert_eq!(
             decode_quoted_printable("Gr=C3=BC=C3=9Fe"),
             "Grüße".as_bytes()
@@ -330,6 +324,9 @@ mod tests {
     fn quoted_printable_malformed_input_is_kept_verbatim() {
         assert_eq!(decode_quoted_printable("a=ZZb"), b"a=ZZb");
         assert_eq!(decode_quoted_printable("a=Z"), b"a=Z");
+        assert_eq!(decode_quoted_printable("a=\rb"), b"a=\rb");
+        assert_eq!(decode_quoted_printable("a=\rXb"), b"a=\rXb");
+        assert_eq!(decode_quoted_printable("a=\nb"), b"a=\nb");
         assert_eq!(decode_quoted_printable("trailing="), b"trailing");
         assert_eq!(decode_quoted_printable("="), b"");
     }
