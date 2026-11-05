@@ -212,6 +212,12 @@ manifest disagree.
   ASCII space and NBSP content instead of relying on header trimming to strip
   it, so `Attachment::new("report ", …)` and `Attachment::new("report\u{a0}", …)`
   round-trip unchanged.
+- **Mailbox parsing rejects text after the closing angle bracket.** `Mailbox::parse`
+  took `raw.rfind('>')` and silently discarded whatever followed it, so a call such
+  as `.to("Name <a@example.com> (comment), Eve <eve@example.com>")` could parse as
+  one mailbox with the rest of the caller's string gone. The builder now shares the
+  parser's mailbox grammar and the shared path rejects non-CFWS suffixes, while
+  still accepting a comment after the address.
 - **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with

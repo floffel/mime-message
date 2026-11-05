@@ -1070,6 +1070,34 @@ fn mailbox_parse_rejects_reversed_brackets() {
     );
 }
 
+#[test]
+fn mailbox_parse_accepts_cfws_after_angle_addr() {
+    let message = Message::builder()
+        .from("Name <a@example.com> (comment)")
+        .unwrap()
+        .to("recipient@example.com")
+        .unwrap()
+        .build()
+        .unwrap();
+    assert_eq!(message.from.name.as_deref(), Some("Name"));
+    assert_eq!(message.from.address, "a@example.com");
+}
+
+#[test]
+fn mailbox_parse_rejects_non_cfws_after_angle_addr() {
+    for raw in [
+        "Name <a@example.com>, Eve <eve@example.com>",
+        "Name <a@example.com> <eve@example.com>",
+        "Name <a@example.com>,",
+        "Name <a@example.com> junk",
+    ] {
+        assert!(
+            matches!(Message::builder().from(raw), Err(Error::InvalidMailbox(_))),
+            "{raw} must be rejected rather than silently truncated"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Charset registry: every WHATWG label, not a closed list of four families
 // ---------------------------------------------------------------------------
