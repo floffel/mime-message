@@ -213,6 +213,15 @@ manifest disagree.
   measures the line it just wrote and returns `Error::LimitExceeded` when one
   token cannot fit, rather than silently breaking the documented guarantee.
   Pinned by `a_single_token_longer_than_the_header_budget_is_rejected`.
+- **Preserved headers reject the same Unicode line separators as modelled headers.**
+  `render` checked preserved raw values byte-wise, so U+0085, U+2028 and U+2029 —
+  each multi-byte UTF-8 and therefore invisible to a byte scan for ASCII
+  controls — could be re-emitted through `set_header` or a raw parse while the
+  same characters were rejected in modelled fields. The fold-aware validator used
+  by `Header::from_wire`, the preserved-header mutation APIs and the renderer now
+  reads characters after a legal CRLF+WSP fold, rejects those separators
+  everywhere else, and still renders accepted folded values unchanged. Pinned by
+  the raw-parse and `set_header` cases in `tests/headers.rs`.
 - **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
   label such as `iso-8859-1*de` was handed to the charset registry whole, where
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a

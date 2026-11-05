@@ -393,10 +393,7 @@ fn push_header(out: &mut String, name: &'static str, value: &str, _foldable: boo
 
 /// Rejects every character that could start a new header line.
 fn has_forbidden_chars(value: &str) -> bool {
-    value.chars().any(|ch| {
-        matches!(ch, '\r' | '\n' | '\0' | '\u{85}' | '\u{2028}' | '\u{2029}')
-            || (ch.is_control() && ch != '\t')
-    })
+    crate::header::has_forbidden_chars(value)
 }
 
 /// Folds at single-space boundaries so no line exceeds 78 characters

@@ -43,8 +43,8 @@ fn check_location(text: &str) {
                 text.len()
             );
             assert!(
-                byte == 0x7f || (byte < 0x20 && byte != b'\t'),
-                "0x{byte:02x} is not a forbidden byte"
+                byte == 0x7f || (byte < 0x20 && byte != b'\t') || byte >= 0xc2,
+                "0x{byte:02x} does not identify a rejected character"
             );
         }
         Err(Error::InvalidContentType { part, text: value }) => {

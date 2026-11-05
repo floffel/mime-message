@@ -113,6 +113,14 @@ pub(crate) fn ensure_not_modelled(header: &Header) -> Result<()> {
     Ok(())
 }
 
+/// Rejects a preserved header whose raw value cannot be rendered safely.
+///
+/// The mutation APIs call this before storing a header, so the failure names the
+/// field and the offending UTF-8 lead byte instead of waiting for `render`.
+pub(crate) fn ensure_safe_preserved_header(header: &Header) -> Result<()> {
+    crate::header::check_folded_value(header.name(), header.raw_value())
+}
+
 /// A single mailbox (`Display Name <local@domain>` or `local@domain`).
 ///
 /// The struct is deliberately **not** `#[non_exhaustive]`: a mailbox is the
@@ -477,6 +485,7 @@ impl Message {
     /// models.
     pub fn push_header(&mut self, header: Header) -> Result<()> {
         ensure_not_modelled(&header)?;
+        ensure_safe_preserved_header(&header)?;
         self.headers.push(header);
         Ok(())
     }
@@ -502,6 +511,7 @@ impl Message {
     /// models.
     pub fn set_header(&mut self, header: Header) -> Result<()> {
         ensure_not_modelled(&header)?;
+        ensure_safe_preserved_header(&header)?;
         let name = header.name().to_string();
         let Some(first) = self.headers.iter().position(|old| old.is(&name)) else {
             self.headers.push(header);
@@ -797,6 +807,7 @@ impl MessageBuilder {
     /// ```
     pub fn header(mut self, header: Header) -> Result<Self> {
         ensure_not_modelled(&header)?;
+        ensure_safe_preserved_header(&header)?;
         self.headers.push(header);
         Ok(self)
     }

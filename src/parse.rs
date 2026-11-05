@@ -611,11 +611,7 @@ fn header_text(headers: &Headers, name: &'static str) -> Result<Option<String>> 
 }
 
 fn check_header_value(name: &'static str, value: &str) -> Result<()> {
-    let dangerous = value.chars().any(|ch| {
-        matches!(ch, '\r' | '\n' | '\0' | '\u{85}' | '\u{2028}' | '\u{2029}')
-            || (ch.is_control() && ch != '\t')
-    });
-    if dangerous {
+    if crate::header::has_forbidden_chars(value) {
         return Err(Error::HeaderInjection(name));
     }
     Ok(())
