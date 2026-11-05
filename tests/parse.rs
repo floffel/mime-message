@@ -250,7 +250,7 @@ fn thousand_recipients_parse() {
         if index > 0 {
             to.push(',');
         }
-        if index % 10 == 0 {
+        if index > 0 && index % 10 == 0 {
             // Keep lines inside the header-line budget by folding.
             to.push_str("\r\n ");
         }
