@@ -189,6 +189,18 @@ manifest disagree.
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with
   `Error::NoRecipients`, as the `render` docs promise.
+- **Attachment filenames are encoded on the wire instead of leaking raw 8-bit
+  bytes.** `Content-Disposition` wrote `filename="…"` with the original UTF-8
+  filename, so a name like `Grüße.pdf` left the crate as raw 8-bit header data
+  even though the crate already encodes non-ASCII subjects and display names
+  and downgrades non-ASCII bodies. Non-ASCII names now render the RFC 2231 form
+  `filename*=UTF-8''percent-encoded` (split across `filename*0*`, `filename*1*`,
+  … when needed) with a plain ASCII fallback for receivers that ignore the
+  extended parameter. Header folding now measures characters rather than UTF-8
+  bytes, so a multi-byte filename no longer folds at the wrong width. Pinned by
+  the non-ASCII filename and long-continuation render tests plus the parse/render
+  round trip.
+
 - **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
   label such as `iso-8859-1*de` was handed to the charset registry whole, where
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a
