@@ -848,10 +848,10 @@ fn strip_comments(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct MediaType {
-    kind: String,
-    subtype: String,
-    params: BTreeMap<String, String>,
+pub(crate) struct MediaType {
+    pub(crate) kind: String,
+    pub(crate) subtype: String,
+    pub(crate) params: BTreeMap<String, String>,
 }
 
 impl MediaType {
@@ -873,13 +873,13 @@ impl MediaType {
         self.params.get(name).map(String::as_str)
     }
 
-    fn essence(&self) -> String {
+    pub(crate) fn essence(&self) -> String {
         format!("{}/{}", self.kind, self.subtype)
     }
 }
 
 /// Parses a `Content-Type` value, naming `part` when it is not a media type.
-fn parse_media_type(raw: &str, part: usize) -> Result<MediaType> {
+pub(crate) fn parse_media_type(raw: &str, part: usize) -> Result<MediaType> {
     let (essence, params) = parse_parameterized(raw);
     let Some((kind, subtype)) = essence.split_once('/') else {
         return Err(Error::InvalidContentType {

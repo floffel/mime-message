@@ -22,6 +22,9 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
+use crate::error::{Error, Result};
+use crate::parse::parse_media_type;
+
 /// Strips the `cid:` scheme and surrounding angle brackets from a reference.
 ///
 /// The result is the bare `Content-ID`, which is what
@@ -52,9 +55,77 @@ pub fn normalise(reference: &str) -> &str {
 ///
 /// assert_eq!(cid::data_uri("image/png", b"hi"), "data:image/png;base64,aGk=");
 /// ```
+///
+/// A `Content-Type` that is not a media type falls back to
+/// `application/octet-stream`, so the result is still a URI a browser can
+/// load. Use [`try_data_uri`] when the caller needs to distinguish a fallback
+/// from the content type that was requested. The returned string is a raw URI,
+/// not HTML-escaped; when inserting it into HTML, put it in a quoted attribute
+/// or otherwise escape it for the insertion context.
 #[must_use]
 pub fn data_uri(content_type: &str, data: &[u8]) -> String {
-    format!("data:{content_type};base64,{}", STANDARD.encode(data))
+    match try_data_uri(content_type, data) {
+        Ok(uri) => uri,
+        Err(_) => format!(
+            "data:application/octet-stream;base64,{}",
+            STANDARD.encode(data)
+        ),
+    }
+}
+
+/// Builds a `data:` URI for one part, rejecting an invalid `content_type`.
+///
+/// The value must be an RFC media type: `type/subtype` with optional
+/// parameters. Parameters are parsed and re-rendered with percent encoding for
+/// the `data:` URI, so a quote or control byte in a parameter cannot terminate
+/// an HTML attribute when the URI is later inserted into quoted markup.
+/// Control characters and HTML delimiter characters in the type, subtype or
+/// parameter name are rejected rather than escaped.
+///
+/// ```
+/// use mime_message::cid;
+///
+/// assert_eq!(
+///     cid::try_data_uri("text/plain; name=\"x y\"", b"hi").unwrap(),
+///     "data:text/plain;name=x%20y;base64,aGk="
+/// );
+/// assert!(cid::try_data_uri("text/plain; name=\"x\"\" onerror=\"x", b"hi").is_err());
+/// ```
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidContentType`] when `content_type` is not a media
+/// type, or when a parameter name or value contains bytes that cannot be
+/// safely rendered in a `data:` URI.
+pub fn try_data_uri(content_type: &str, data: &[u8]) -> Result<String> {
+    if content_type.chars().any(char::is_control) {
+        return Err(invalid_content_type(content_type));
+    }
+    if !parameters_are_safe(content_type) {
+        return Err(invalid_content_type(content_type));
+    }
+    let media = parse_media_type(content_type, 0)?;
+    if media
+        .kind
+        .bytes()
+        .chain(media.subtype.bytes())
+        .any(is_unsafe_data_uri_delimiter)
+    {
+        return Err(invalid_content_type(content_type));
+    }
+    let mut uri = format!("data:{}", media.essence());
+    for (name, value) in &media.params {
+        if name.bytes().any(|byte| !is_safe_parameter_name_byte(byte)) {
+            return Err(invalid_content_type(content_type));
+        }
+        uri.push(';');
+        uri.push_str(name);
+        uri.push('=');
+        uri.push_str(&percent_encode_data_parameter(value));
+    }
+    uri.push_str(";base64,");
+    uri.push_str(&STANDARD.encode(data));
+    Ok(uri)
 }
 
 /// Rewrites every `cid:` reference in `html` through `resolve`.
@@ -124,6 +195,102 @@ where
     out.push_str(&html[copied..]);
     out
 }
+
+/// Percent-encodes a data URI parameter value.
+fn percent_encode_data_parameter(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
+fn is_unsafe_data_uri_delimiter(byte: u8) -> bool {
+    matches!(byte, b'"' | b'\'' | b'<' | b'>' | b'&')
+}
+
+fn is_safe_parameter_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+}
+
+/// A stricter parameter scan than the permissive parser.
+///
+/// Reading mail tolerates garbage around `Content-Type` parameters; building a
+/// URI does not. This checks the raw value so a malformed parameter cannot be
+/// skipped by the parser and then reappear as literal text.
+fn parameters_are_safe(content_type: &str) -> bool {
+    let Some((_, raw)) = content_type.split_once(';') else {
+        return true;
+    };
+    let bytes = raw.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b';') {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            return true;
+        }
+        let name_start = index;
+        while index < bytes.len() && bytes[index] != b'=' && bytes[index] != b';' {
+            index += 1;
+        }
+        if index >= bytes.len() || bytes[index] != b'=' {
+            return false;
+        }
+        let name = raw[name_start..index].trim();
+        if name.is_empty() || !name.bytes().all(is_safe_parameter_name_byte) {
+            return false;
+        }
+        index += 1;
+        if bytes.get(index) == Some(&b'"') {
+            index += 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\\' => {
+                        index += 1;
+                        if index >= bytes.len() || bytes[index].is_ascii_control() {
+                            return false;
+                        }
+                        index += 1;
+                    }
+                    b'"' => {
+                        index += 1;
+                        break;
+                    }
+                    byte if byte.is_ascii_control() => return false,
+                    _ => index += 1,
+                }
+            }
+            if bytes.get(index - 1) != Some(&b'"') {
+                return false;
+            }
+        } else {
+            while index < bytes.len() && bytes[index] != b';' {
+                if bytes[index].is_ascii_control() || is_unsafe_data_uri_delimiter(bytes[index]) {
+                    return false;
+                }
+                index += 1;
+            }
+        }
+    }
+    true
+}
+
+fn invalid_content_type(content_type: &str) -> Error {
+    Error::InvalidContentType {
+        part: 0,
+        text: crate::truncate(content_type, 120),
+    }
+}
+
+const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
 /// Bytes that make a preceding `cid:` part of a longer word.
 fn is_word_byte(byte: u8) -> bool {
@@ -207,6 +374,32 @@ mod tests {
         assert_eq!(
             data_uri("image/png", &[0xff, 0x00]),
             "data:image/png;base64,/wA="
+        );
+    }
+
+    #[test]
+    fn try_data_uri_rejects_invalid_media_types() {
+        assert!(try_data_uri("text/plain; name=\"x\"\" onerror=\"x", b"hi").is_err());
+        assert!(try_data_uri("image/png\r\nX: y", b"hi").is_err());
+        assert!(try_data_uri("image/png; name=\"x\\\r\n y\"", b"hi").is_err());
+        assert!(try_data_uri("image/p'ng", b"hi").is_err());
+        assert!(try_data_uri("image/png; x'=y", b"hi").is_err());
+        assert!(try_data_uri("text/plain; name=\"x\"", b"hi").is_ok());
+    }
+
+    #[test]
+    fn try_data_uri_percent_encodes_parameters() {
+        assert_eq!(
+            try_data_uri("text/plain; name=\"x y&z\"", b"hi").unwrap(),
+            "data:text/plain;name=x%20y%26z;base64,aGk="
+        );
+    }
+
+    #[test]
+    fn data_uri_falls_back_for_invalid_media_types() {
+        assert_eq!(
+            data_uri("text/plain; name=\"x\"\" onerror=\"x", b"hi"),
+            "data:application/octet-stream;base64,aGk="
         );
     }
 }

@@ -556,10 +556,13 @@ impl Message {
     ///
     /// The content is embedded as `data:<type>;base64,<bytes>`, so the result
     /// renders in any browser without network access. References without a
-    /// matching part are left untouched — a broken image is better than a
-    /// silently dropped one. For a URL-based rewrite (for example to an HTTP
-    /// endpoint your webmail serves) use [`cid::rewrite`]
-    /// with your own resolver.
+    /// matching part, or whose `Content-Type` is not a safe media type, are left
+    /// untouched — a broken image is better than a silently dropped one. The
+    /// replacement URI is HTML-escaped before it is inserted, so values that
+    /// would otherwise break out of a quoted attribute stay inside it.
+    ///
+    /// For a URL-based rewrite (for example to an HTTP endpoint your webmail
+    /// serves) use [`cid::rewrite`] with your own resolver.
     ///
     /// ```rust
     /// use mime_message::{Attachment, Message};
@@ -585,10 +588,28 @@ impl Message {
     #[must_use]
     pub fn rewrite_cid_references(&self, html: &str) -> String {
         cid::rewrite(html, |reference| {
-            self.part_by_content_id(reference)
-                .map(|part| cid::data_uri(&part.content_type, &part.data))
+            self.part_by_content_id(reference).and_then(|part| {
+                cid::try_data_uri(&part.content_type, &part.data)
+                    .ok()
+                    .map(|uri| escape_html_attribute(&uri))
+            })
         })
     }
+}
+
+fn escape_html_attribute(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(feature = "dkim")]

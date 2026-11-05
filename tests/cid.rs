@@ -145,6 +145,36 @@ fn cid_references_become_data_uris() {
 }
 
 #[test]
+fn builtin_rewrite_rejects_an_invalid_content_type_instead_of_injecting_html() {
+    let mut message = parse(related_message()).expect("parse");
+    let part = message
+        .attachments
+        .first_mut()
+        .expect("the related message has one inline part");
+    part.content_type = "image/png\" onerror=\"alert(1)".to_string();
+
+    let html = message.rewrite_cid_references("<img src=\"cid:logo@example.com\">");
+    assert_eq!(html, "<img src=\"cid:logo@example.com\">");
+    assert!(!html.contains("onerror"));
+}
+
+#[test]
+fn builtin_rewrite_escapes_data_uri_parameters() {
+    let mut message = parse(related_message()).expect("parse");
+    let part = message
+        .attachments
+        .first_mut()
+        .expect("the related message has one inline part");
+    part.content_type = "image/png; name=\"x&y\"".to_string();
+
+    let html = message.rewrite_cid_references("<img src=\"cid:logo@example.com\">");
+    assert_eq!(
+        html,
+        "<img src=\"data:image/png;name=x%26y;base64,iVBORw0KGgo=\">"
+    );
+}
+
+#[test]
 fn unresolved_references_are_left_alone() {
     let message = parse(related_message()).expect("parse");
     let html = "<img src=\"cid:missing\"><p>cid: also in text</p>";

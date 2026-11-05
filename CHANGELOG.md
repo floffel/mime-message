@@ -38,6 +38,14 @@ manifest disagree.
 
 ### Added
 
+- **`cid::try_data_uri` validates a `Content-Type` before building a `data:` URI.** The
+  fallible constructor parses the value as an RFC media type using the same path as
+  `Content-Type` handling, rejects control bytes and unsafe URI/HTML delimiters, and
+  percent-encodes parameters. `cid::data_uri` keeps its signature and now falls back to
+  `application/octet-stream` for an invalid media type; `Message::rewrite_cid_references`
+  uses the validating path and HTML-escapes replacements before inserting them into the
+  caller's HTML.
+
 - **`examples/compose_and_parse.rs`**, built and run in CI: composes an invoice mail
   (text, HTML alternative, inline logo with `Content-ID`, PDF attachment), asserts CRLF
   line endings, the 78-byte header limit, the render→parse round trip and `cid:`
@@ -188,6 +196,14 @@ manifest disagree.
   continuation whitespace, rejects a value that starts with CRLF, and is shared
   with the renderer's guard so `Header::from_wire` and `render` agree. Pinned by
   the `from_wire` unit test and the header round-trip coverage in `tests/headers.rs`.
+- **An unvalidated attachment `Content-Type` can no longer break out of a `data:` URI or
+  an HTML attribute.** `Message::rewrite_cid_references` used to concatenate
+  `attachment.content_type` directly into `data:<type>;base64,…`, so a value like
+  `image/png" onerror="alert(1)` produced markup that escaped the quoted `src`
+  attribute. The built-in rewrite now validates the media type before substituting,
+  leaves the `cid:` reference unresolved on failure, and escapes replacement URIs.
+  Pinned by focused tests for quotes, control characters, invalid parameters and safe
+  percent-encoded parameters.
 
 - **A `ControlCharacter` rejection says which field and which byte, not just a name.**
   The variant was `ControlCharacter(String)` and every construction site passed the header *name*
