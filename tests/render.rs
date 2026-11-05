@@ -212,8 +212,50 @@ fn attachment_switches_to_multipart_with_base64() {
 
     assert!(text.contains("Content-Type: multipart/mixed; boundary=\""));
     assert!(text.contains("Content-Disposition: attachment; filename=\"rechnung.pdf\""));
+    assert!(!text.contains("filename*0*"));
     assert!(text.contains("Content-Transfer-Encoding: base64"));
     assert!(text.trim_end().ends_with("--"));
+}
+
+#[test]
+fn non_ascii_attachment_filename_is_rfc2231_encoded() {
+    let msg = simple().clone_with_attachment(Attachment::new(
+        "Grüße 100%.pdf",
+        "application/pdf",
+        b"%PDF-1.4".to_vec(),
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    let unfolded = text.replace("\r\n ", " ");
+    assert!(
+        unfolded.contains(
+            "Content-Disposition: attachment; filename=\"Gr__e 100%.pdf\"; filename*0*=UTF-8''Gr%C3%BC%C3%9Fe%20100%25.pdf"
+        ),
+        "filename was not encoded: {text}"
+    );
+
+    let parsed = mime_message::parse(&text).unwrap();
+    assert_eq!(parsed.attachments[0].filename, "Grüße 100%.pdf");
+}
+
+#[test]
+fn long_non_ascii_attachment_filename_uses_rfc2231_continuations() {
+    let filename = format!("Grüße-{}.pdf", "a".repeat(80));
+    let msg = simple().clone_with_attachment(Attachment::new(
+        filename.clone(),
+        "application/pdf",
+        b"%PDF-1.4".to_vec(),
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    assert!(text.contains("filename*0*=UTF-8''"), "{text}");
+    assert!(text.contains("filename*1*="), "{text}");
+    for line in text.split("\r\n").filter(|line| is_header_line(line)) {
+        assert!(line.len() <= 78, "line too long: {line:?}");
+    }
+
+    let parsed = mime_message::parse(&text).unwrap();
+    assert_eq!(parsed.attachments[0].filename, filename);
 }
 
 #[test]

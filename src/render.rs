@@ -11,6 +11,8 @@ use crate::{check_recipients, cid, ensure_not_modelled, is_tchar, Mailbox, Messa
 
 const CRLF: &str = "\r\n";
 const MAX_LINE: usize = 78;
+const MAX_ASCII_FALLBACK: usize = 60;
+const RFC2231_CHUNK: usize = 48;
 
 /// Longest body line RFC 5322 §2.1.1 permits, CRLF excluded.
 const MAX_BODY_LINE: usize = 998;
@@ -223,10 +225,7 @@ fn write_attachment(
     }
     headers.push((
         "Content-Disposition",
-        format!(
-            "{disposition}; filename=\"{}\"",
-            sanitise_filename(&attachment.filename)
-        ),
+        render_content_disposition(disposition, &attachment.filename),
     ));
     write_part_header(out, boundary, &headers)?;
 
@@ -288,6 +287,86 @@ fn render_mailbox(mailbox: &Mailbox) -> Result<String> {
     })
 }
 
+/// Renders `Content-Disposition`, RFC 2231-encoding a non-ASCII filename.
+fn render_content_disposition(disposition: &str, filename: &str) -> String {
+    let filename = sanitise_filename(filename);
+    if filename.is_ascii() {
+        return format!("{disposition}; filename=\"{filename}\"");
+    }
+
+    let fallback = ascii_filename_fallback(&filename);
+    let encoded = percent_encode_rfc2231(&filename);
+    let chunks = split_rfc2231(&encoded);
+    let mut rendered = format!("{disposition}; filename=\"{fallback}\"");
+    for (index, chunk) in chunks.iter().enumerate() {
+        if index == 0 {
+            rendered.push_str(&format!("; filename*0*=UTF-8''{chunk}"));
+        } else {
+            rendered.push_str(&format!("; filename*{index}*={chunk}"));
+        }
+    }
+    rendered
+}
+
+/// A plain fallback for receivers that do not understand RFC 2231.
+fn ascii_filename_fallback(name: &str) -> String {
+    name.chars()
+        .take(MAX_ASCII_FALLBACK)
+        .map(|ch| if ch.is_ascii() { ch } else { '_' })
+        .collect()
+}
+
+/// RFC 2231 §3.2 `attr-char` is the set that may stay undecorated.
+fn percent_encode_rfc2231(value: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if is_rfc2231_attr_char(byte) {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
+}
+
+fn is_rfc2231_attr_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
+        )
+}
+
+/// Splits an encoded value into RFC 2231 continuation chunks.
+///
+/// Each chunk is kept below the folded-continuation budget, and splits only
+/// between encoded pieces so `%XX` escapes stay intact.
+fn split_rfc2231(encoded: &str) -> Vec<&str> {
+    let bytes = encoded.as_bytes();
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < bytes.len() {
+        let mut end = start;
+        while end < bytes.len() {
+            let piece_len = if bytes[end] == b'%' && end + 2 < bytes.len() {
+                3
+            } else {
+                1
+            };
+            if end > start && end - start + piece_len > RFC2231_CHUNK {
+                break;
+            }
+            end += piece_len;
+        }
+        chunks.push(&encoded[start..end]);
+        start = end;
+    }
+    chunks
+}
+
 /// Escapes a display name for a quoted-string: only `\` and `"` are special.
 fn escape_quoted(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
@@ -328,13 +407,14 @@ fn has_forbidden_chars(value: &str) -> bool {
 fn fold_header(name: &str, value: &str) -> String {
     let tokens: Vec<&str> = value.split(' ').collect();
     let mut out = format!("{name}: ");
-    let mut line_len = name.len() + 2;
+    let mut line_len = header_len(name) + 2;
 
     for (index, token) in tokens.iter().enumerate() {
         if index > 0 {
             let previous = tokens[index - 1];
-            let foldable = !token.is_empty() && !previous.is_empty() && line_len > name.len() + 2;
-            if foldable && line_len + 1 + token.len() > MAX_LINE {
+            let foldable =
+                !token.is_empty() && !previous.is_empty() && line_len > header_len(name) + 2;
+            if foldable && line_len + 1 + header_len(token) > MAX_LINE {
                 out.push_str(CRLF);
                 out.push(' ');
                 line_len = 1;
@@ -344,9 +424,14 @@ fn fold_header(name: &str, value: &str) -> String {
             }
         }
         out.push_str(token);
-        line_len += token.len();
+        line_len += header_len(token);
     }
     out
+}
+
+/// Header folding measures characters, not UTF-8 bytes.
+fn header_len(text: &str) -> usize {
+    text.chars().count()
 }
 
 /// RFC 2047 encoded-word for non-ASCII header content.
