@@ -725,7 +725,7 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
 
 pub(crate) fn validate_address(address: &str) -> Result<()> {
     let invalid = || Error::invalid_mailbox(address);
-    if address.is_empty() || address.contains(['<', '>']) {
+    if address.is_empty() || address.contains(['<', '>']) || address.chars().any(char::is_control) {
         return Err(invalid());
     }
     let Some((local, domain)) = address.rsplit_once('@') else {
@@ -734,6 +734,7 @@ pub(crate) fn validate_address(address: &str) -> Result<()> {
     if local.is_empty() || domain.is_empty() {
         return Err(invalid());
     }
+
     let quoted_local = local.len() >= 2 && local.starts_with('"') && local.ends_with('"');
     let bare_local = if quoted_local {
         &local[1..local.len() - 1]
@@ -743,12 +744,16 @@ pub(crate) fn validate_address(address: &str) -> Result<()> {
     if bare_local.is_empty() || bare_local.chars().any(char::is_control) {
         return Err(invalid());
     }
-    if !quoted_local && (bare_local.chars().any(char::is_whitespace) || bare_local.contains('@')) {
+    if !quoted_local
+        && (bare_local.chars().any(char::is_whitespace)
+            || bare_local.contains(['@', ',', ';', '<', '>']))
+    {
         return Err(invalid());
     }
     if domain
         .chars()
         .any(|ch| ch.is_control() || ch.is_whitespace() || ch == '@')
+        || domain.contains([',', ';', '<', '>'])
     {
         return Err(invalid());
     }

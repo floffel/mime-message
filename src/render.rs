@@ -19,12 +19,12 @@ const MAX_BODY_LINE: usize = 998;
 pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     let mut out = String::new();
 
-    push_header(&mut out, "From", &render_mailbox(&message.from), true)?;
+    push_header(&mut out, "From", &render_mailbox(&message.from)?, true)?;
     if !message.to.is_empty() {
-        push_header(&mut out, "To", &render_mailboxes(&message.to), true)?;
+        push_header(&mut out, "To", &render_mailboxes(&message.to)?, true)?;
     }
     if !message.cc.is_empty() {
-        push_header(&mut out, "Cc", &render_mailboxes(&message.cc), true)?;
+        push_header(&mut out, "Cc", &render_mailboxes(&message.cc)?, true)?;
     }
     push_header(&mut out, "Subject", &encode_word(&message.subject), true)?;
     if let Some(date) = &message.date {
@@ -287,22 +287,23 @@ fn is_hostile_id_char(ch: char) -> bool {
     matches!(ch, '<' | '>' | '\0') || ch.is_control() || ch.is_whitespace()
 }
 
-fn render_mailboxes(mailboxes: &[Mailbox]) -> String {
-    mailboxes
-        .iter()
-        .map(render_mailbox)
-        .collect::<Vec<_>>()
-        .join(", ")
+fn render_mailboxes(mailboxes: &[Mailbox]) -> Result<String> {
+    let mut rendered = Vec::with_capacity(mailboxes.len());
+    for mailbox in mailboxes {
+        rendered.push(render_mailbox(mailbox)?);
+    }
+    Ok(rendered.join(", "))
 }
 
-fn render_mailbox(mailbox: &Mailbox) -> String {
-    match &mailbox.name {
+fn render_mailbox(mailbox: &Mailbox) -> Result<String> {
+    crate::parse::validate_address(&mailbox.address)?;
+    Ok(match &mailbox.name {
         Some(name) if name.is_ascii() => {
             format!("\"{}\" <{}>", escape_quoted(name), mailbox.address)
         }
         Some(name) => format!("{} <{}>", encode_word(name), mailbox.address),
         None => mailbox.address.clone(),
-    }
+    })
 }
 
 /// Escapes a display name for a quoted-string: only `\` and `"` are special.
