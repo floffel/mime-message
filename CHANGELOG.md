@@ -38,6 +38,11 @@ manifest disagree.
 
 ### Added
 
+- **Property coverage for the pure `cid` helpers.** `cid::normalise`, `cid::data_uri` /
+  `cid::try_data_uri`, and `cid::rewrite` now have generated tests for Unicode
+  references, malformed and empty inputs, unresolved-reference preservation, output
+  safety and payload round trips, and resolver callback calls.
+
 - **`cid::try_data_uri` validates a `Content-Type` before building a `data:` URI.** The
   fallible constructor parses the value as an RFC media type using the same path as
   `Content-Type` handling, rejects control bytes and unsafe URI/HTML delimiters, and

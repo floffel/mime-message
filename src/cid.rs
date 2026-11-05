@@ -320,6 +320,29 @@ fn reference_end(bytes: &[u8], start: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::fmt::Write as _;
+
+    fn cid_reference_text() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[^\\s<>\"'(),;]{1,20}")
+            .expect("CID reference regex is valid")
+    }
+
+    fn rewrite_case() -> impl Strategy<Value = RewriteCase> {
+        prop_oneof![
+            proptest::string::string_regex("[^cC]{0,12}")
+                .expect("literal regex is valid")
+                .prop_map(RewriteCase::Literal),
+            (cid_reference_text(), any::<bool>())
+                .prop_map(|(text, unresolved)| { RewriteCase::Reference { text, unresolved } }),
+        ]
+    }
+
+    #[derive(Clone, Debug)]
+    enum RewriteCase {
+        Literal(String),
+        Reference { text: String, unresolved: bool },
+    }
 
     #[test]
     fn normalise_handles_both_forms_and_junk() {
@@ -401,5 +424,174 @@ mod tests {
             data_uri("text/plain; name=\"x\"\" onerror=\"x", b"hi"),
             "data:application/octet-stream;base64,aGk="
         );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        #[test]
+        fn normalise_round_trips_trimmed_unicode_references(reference in any::<String>()) {
+            let reference = reference.trim();
+            prop_assume!(!reference.is_empty());
+            prop_assume!(!reference.starts_with('<'));
+            prop_assume!(!reference.starts_with('>'));
+            prop_assume!(!reference.ends_with('<'));
+            prop_assume!(!reference.ends_with('>'));
+            let lower_scheme = format!("cid:{reference}");
+            let upper_scheme = format!("CID:<{reference}>");
+
+            prop_assert_eq!(normalise(&lower_scheme), reference);
+            prop_assert_eq!(normalise(&upper_scheme), reference);
+        }
+
+        #[test]
+        fn normalise_output_has_no_outer_junk(reference in any::<String>()) {
+            let normalised = normalise(&reference);
+            let starts_clean = normalised
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_whitespace() && ch != '<' && ch != '>');
+            let ends_clean = normalised
+                .chars()
+                .next_back()
+                .is_none_or(|ch| !ch.is_whitespace() && ch != '<' && ch != '>');
+
+            prop_assert!(reference.contains(normalised));
+            prop_assert!(starts_clean);
+            prop_assert!(ends_clean);
+        }
+
+        #[test]
+        fn data_uri_matches_validating_constructor_or_fallback(
+            content_type in any::<String>(),
+            data in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            if let Ok(uri) = try_data_uri(&content_type, &data) {
+                prop_assert_eq!(data_uri(&content_type, &data), uri);
+            } else {
+                let fallback = format!(
+                    "data:application/octet-stream;base64,{}",
+                    STANDARD.encode(&data)
+                );
+                prop_assert_eq!(data_uri(&content_type, &data), fallback);
+            }
+        }
+
+        #[test]
+        fn try_data_uri_output_is_safe_and_round_trips_payload(
+            content_type in any::<String>(),
+            data in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            if let Ok(uri) = try_data_uri(&content_type, &data) {
+                prop_assert!(uri.is_ascii(), "{uri:?}");
+                prop_assert!(!uri.chars().any(char::is_whitespace), "{uri:?}");
+                prop_assert!(!uri.chars().any(char::is_control), "{uri:?}");
+                prop_assert!(
+                    !uri
+                        .chars()
+                        .any(|ch| matches!(ch, '"' | '\'' | '<' | '>' | '&')),
+                    "{uri:?}"
+                );
+
+                let (_, encoded) = uri
+                    .rsplit_once(";base64,")
+                    .expect("a data URI has a base64 marker");
+                prop_assert_eq!(
+                    STANDARD.decode(encoded).expect("output is standard base64"),
+                    data,
+                );
+            }
+        }
+
+        #[test]
+        fn rewrite_unresolved_preserves_html(html in any::<String>()) {
+            let mut seen = Vec::new();
+            let output = rewrite(&html, |reference| {
+                seen.push(reference.to_string());
+                None
+            });
+
+            prop_assert_eq!(&output, &html);
+            for reference in &seen {
+                prop_assert!(!reference.is_empty(), "empty callback reference");
+                prop_assert!(html.contains(reference), "{reference:?} is not in {html:?}");
+            }
+        }
+
+        #[test]
+        fn rewrite_ignores_empty_and_whitespace_references(gap in "[ \t\r\n]{1,8}") {
+            let html = format!("before cid:{gap}after");
+            let calls = std::cell::Cell::new(0usize);
+            let output = rewrite(&html, |_| {
+                calls.set(calls.get() + 1);
+                Some("replacement".to_string())
+            });
+
+            prop_assert_eq!(calls.get(), 0);
+            prop_assert_eq!(output, html);
+        }
+
+        #[test]
+        fn rewrite_unterminated_angle_reference_hands_over_the_tail(tail in "[^>]{0,20}") {
+            let html = format!("before cid:<{tail}");
+            let seen = std::cell::RefCell::new(Vec::new());
+            let output = rewrite(&html, |reference| {
+                seen.borrow_mut().push(reference.to_string());
+                Some(format!("[{reference}]"))
+            });
+            let expected_reference = format!("<{tail}");
+
+            prop_assert_eq!(seen.into_inner(), vec![expected_reference.clone()]);
+            prop_assert_eq!(output, format!("before [{expected_reference}]"));
+        }
+
+        #[test]
+        fn rewrite_calls_resolver_once_in_reference_order(
+            cases in prop::collection::vec(rewrite_case(), 0..8),
+        ) {
+            let mut html = String::new();
+            let mut expected = String::new();
+            let mut expected_references: Vec<(String, bool)> = Vec::new();
+
+            for case in cases {
+                match case {
+                    RewriteCase::Literal(text) => {
+                        html.push_str(&text);
+                        expected.push_str(&text);
+                    }
+                    RewriteCase::Reference { text, unresolved } => {
+                        html.push(' ');
+                        html.push_str("cid:");
+                        html.push_str(&text);
+                        html.push(' ');
+                        expected.push(' ');
+                        expected.push_str(if unresolved { "cid:" } else { "" });
+                        if unresolved {
+                            expected.push_str(&text);
+                        } else {
+                            write!(expected, "[{text}]").expect("writing to a String cannot fail");
+                        }
+                        expected.push(' ');
+                        expected_references.push((text, unresolved));
+                    }
+                }
+            }
+
+            let index = std::cell::Cell::new(0usize);
+            let output = rewrite(&html, |reference| {
+                let current = index.get();
+                assert!(
+                    current < expected_references.len(),
+                    "unexpected reference {reference:?}"
+                );
+                let (expected_reference, unresolved) = &expected_references[current];
+                assert_eq!(reference, expected_reference.as_str());
+                index.set(current + 1);
+                (!*unresolved).then(|| format!("[{expected_reference}]"))
+            });
+
+            prop_assert_eq!(index.get(), expected_references.len());
+            prop_assert_eq!(output, expected);
+        }
     }
 }
