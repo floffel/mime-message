@@ -683,7 +683,7 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
     let (display, address) = match angle_open(text) {
         Some(open) => {
             let Some(close_rel) = text[open..].find('>') else {
-                return Err(Error::InvalidMailbox(truncate(raw, 120)));
+                return Err(Error::invalid_mailbox(raw));
             };
             let close = open + close_rel;
             (text[..open].trim(), text[open + 1..close].trim())
@@ -724,7 +724,7 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
 }
 
 pub(crate) fn validate_address(address: &str) -> Result<()> {
-    let invalid = || Error::InvalidMailbox(truncate(address, 120));
+    let invalid = || Error::invalid_mailbox(address);
     if address.is_empty() || address.contains(['<', '>']) {
         return Err(invalid());
     }
