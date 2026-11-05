@@ -142,9 +142,9 @@ fn pem_rejections_never_echo_the_input() {
     assert_eq!(error, Error::InvalidKey(KeyRejected::UnsupportedPemLabel));
     assert_no_key_material(&rendered(&error));
 
-    // The three labels this crate reads all reach a PKCS decoder, whose answer now
+    // The two labels this crate reads both reach a PKCS decoder, whose answer now
     // stays in the cause chain. The body must survive nowhere.
-    for label in ["RSA PRIVATE KEY", "PRIVATE KEY", "ED25519 PRIVATE KEY"] {
+    for label in ["RSA PRIVATE KEY", "PRIVATE KEY"] {
         let error = SigningKey::from_pem(&pem(label, &body)).unwrap_err();
         assert!(
             matches!(error, Error::InvalidKeyPem(_)),
@@ -154,6 +154,13 @@ fn pem_rejections_never_echo_the_input() {
         assert_no_key_material(&text);
         assert!(!text.contains(&body[..40]), "the body was echoed: {text}");
     }
+
+    // `ED25519 PRIVATE KEY` is not a label either decoder reads, so it is rejected as
+    // unsupported instead of probing a decoder that can only fail. The label and the
+    // body both stay out of the message.
+    let error = SigningKey::from_pem(&pem("ED25519 PRIVATE KEY", &body)).unwrap_err();
+    assert_eq!(error, Error::InvalidKey(KeyRejected::UnsupportedPemLabel));
+    assert_no_key_material(&rendered(&error));
 }
 
 #[test]

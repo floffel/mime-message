@@ -350,7 +350,7 @@ fn malformed_keys_are_rejected_without_leaking_material() {
         // Only the labels this crate claims reach the PKCS decoder, and only those can
         // fail with a typed cause; any other label, and text without a BEGIN line, is
         // rejected by our own check and stays a plain InvalidKey.
-        let claimed = ["RSA PRIVATE KEY", "PRIVATE KEY", "ED25519 PRIVATE KEY"]
+        let claimed = ["RSA PRIVATE KEY", "PRIVATE KEY"]
             .iter()
             .any(|label| pem.contains(&format!("-----BEGIN {label}-----")));
         if claimed {

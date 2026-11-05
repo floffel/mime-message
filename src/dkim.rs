@@ -327,19 +327,17 @@ impl SigningKey {
                     .map_err(|error| Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs1(error))))?;
                 Self::from_rsa(key)
             }
-            "PRIVATE KEY" | "ED25519 PRIVATE KEY" => {
-                match ed25519_dalek::SigningKey::from_pkcs8_pem(pem) {
-                    Ok(key) => Ok(Self {
-                        material: KeyMaterial::Ed25519(Box::new(key)),
-                    }),
-                    Err(ed25519) => {
-                        let key = RsaPrivateKey::from_pkcs8_pem(pem).map_err(|rsa| {
-                            Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs8 { ed25519, rsa }))
-                        })?;
-                        Self::from_rsa(key)
-                    }
+            "PRIVATE KEY" => match ed25519_dalek::SigningKey::from_pkcs8_pem(pem) {
+                Ok(key) => Ok(Self {
+                    material: KeyMaterial::Ed25519(Box::new(key)),
+                }),
+                Err(ed25519) => {
+                    let key = RsaPrivateKey::from_pkcs8_pem(pem).map_err(|rsa| {
+                        Error::InvalidKeyPem(Box::new(KeyParseError::Pkcs8 { ed25519, rsa }))
+                    })?;
+                    Self::from_rsa(key)
                 }
-            }
+            },
             _ => Err(Error::InvalidKey(KeyRejected::UnsupportedPemLabel)),
         }
     }
