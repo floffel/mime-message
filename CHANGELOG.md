@@ -191,6 +191,16 @@ manifest disagree.
   `inline_parts()` counted an unrenderable inline part. The setter now returns
   `Result<Self>` and shares the renderer's normalisation and validation rule, so
   accepted attachments remain renderable and inline counting stays coherent.
+- **Preserved header lines now obey the 998-octet hard limit too.** A parsed
+  message with an unknown field between 999 and `Limits::max_header_line_bytes`
+  could be re-emitted as an over-long physical line because `push_preserved`
+  copied preserved names and raw values without a length check, while body lines
+  and modelled headers had their own limits. The render path and mutation APIs now
+  share a preserved-header validator that measures `name: raw_value` and every
+  folded continuation line against RFC 5322 §2.1.1's 998-octet must, rejecting a
+  parsed 999-octet header with `Error::LimitExceeded` instead of silently
+  emitting it. Pinned by the name, value and combined boundary cases in
+  `tests/rfc_limits.rs`.
 - **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with

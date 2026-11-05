@@ -55,6 +55,11 @@ fn value_of(raw: &str, name: &str) -> String {
     value.unwrap_or_else(|| panic!("no {name} header"))
 }
 
+fn render_header_line(line: &str) -> Result<Vec<u8>, Error> {
+    let raw = format!("From: a@example.com\r\nTo: b@example.com\r\n{line}\r\n\r\nbody");
+    Message::parse(&raw).expect("parse").render()
+}
+
 #[test]
 fn header_lines_stay_within_78_octets() {
     let raw = build(&"wort ".repeat(80), "text");
@@ -174,6 +179,64 @@ fn the_998_octet_boundary_is_inclusive() {
     assert_eq!(
         value_of(&text, "Content-Transfer-Encoding"),
         "quoted-printable"
+    );
+}
+
+#[test]
+fn preserved_header_lines_have_a_998_octet_must() {
+    // The name takes the whole physical line: `name:` is 998 octets at the
+    // boundary and 999 one name byte later.
+    let name_at_limit = format!("X-{}", "n".repeat(995));
+    assert_eq!(name_at_limit.len() + 1, MAX_LINE_MUST);
+    render_header_line(&format!("{name_at_limit}:")).unwrap();
+
+    let name_over_limit = format!("X-{}", "n".repeat(996));
+    assert_eq!(name_over_limit.len() + 1, MAX_LINE_MUST + 1);
+    assert_eq!(
+        render_header_line(&format!("{name_over_limit}:")).unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_MUST,
+        }
+    );
+
+    // A normal name at the boundary: `X-A: ` plus 993 value bytes is 998; one
+    // more value byte is 999 and has to be refused before it reaches the wire.
+    let value_at_limit = "v".repeat(MAX_LINE_MUST - "X-A: ".len());
+    assert_eq!("X-A: ".len() + value_at_limit.len(), MAX_LINE_MUST);
+    render_header_line(&format!("X-A: {value_at_limit}")).unwrap();
+
+    let value_over_limit = "v".repeat(MAX_LINE_MUST + 1 - "X-A: ".len());
+    assert_eq!("X-A: ".len() + value_over_limit.len(), MAX_LINE_MUST + 1);
+    assert_eq!(
+        render_header_line(&format!("X-A: {value_over_limit}")).unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_MUST,
+        }
+    );
+
+    // Name and value share the physical line. The sum is the limit, not the
+    // name or value alone.
+    let long_name = format!("X-{}", "n".repeat(498));
+    let shared_at_limit = format!(
+        "{long_name}: {}",
+        "v".repeat(MAX_LINE_MUST - long_name.len() - 2)
+    );
+    assert_eq!(shared_at_limit.len(), MAX_LINE_MUST);
+    render_header_line(&shared_at_limit).unwrap();
+
+    let shared_over_limit = format!(
+        "{long_name}: {}",
+        "v".repeat(MAX_LINE_MUST + 1 - long_name.len() - 2)
+    );
+    assert_eq!(shared_over_limit.len(), MAX_LINE_MUST + 1);
+    assert_eq!(
+        render_header_line(&shared_over_limit).unwrap_err(),
+        Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_LINE_MUST,
+        }
     );
 }
 

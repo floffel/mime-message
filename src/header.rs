@@ -10,6 +10,9 @@
 use crate::error::{Error, Result};
 use crate::Limits;
 
+/// RFC 5322 §2.1.1: a physical header line MUST be at most 998 octets.
+const MAX_HEADER_LINE_BYTES: usize = 998;
+
 /// One header field, as it arrived on the wire.
 ///
 /// The value is kept twice: [`Header::value`] is the unfolded, trimmed text a
@@ -367,6 +370,35 @@ pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
                 }
                 index += ch.len_utf8();
             }
+        }
+    }
+    Ok(())
+}
+
+/// Validates a preserved header as it will appear on the wire.
+///
+/// Preserved headers are re-emitted byte for byte, so this is the shared guard
+/// for both the mutation APIs and the renderer: controls are rejected exactly as
+/// in [`check_folded_value`], and every physical line (`name:` on the first line,
+/// any folded continuation afterwards) must fit RFC 5322 §2.1.1's 998-octet
+/// hard limit.
+pub(crate) fn check_rendered_header(name: &str, raw: &str) -> Result<()> {
+    check_folded_value(name, raw)?;
+
+    let mut lines = raw.split("\r\n");
+    let first = lines.next().unwrap_or(raw);
+    if name.len() + 1 + first.len() > MAX_HEADER_LINE_BYTES {
+        return Err(Error::LimitExceeded {
+            what: "header line length",
+            limit: MAX_HEADER_LINE_BYTES,
+        });
+    }
+    for line in lines {
+        if line.len() > MAX_HEADER_LINE_BYTES {
+            return Err(Error::LimitExceeded {
+                what: "header line length",
+                limit: MAX_HEADER_LINE_BYTES,
+            });
         }
     }
     Ok(())
