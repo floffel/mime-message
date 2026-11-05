@@ -185,6 +185,13 @@ manifest disagree.
   the same duplicate-name guard as defence in depth. Pinned by the header mutation tests
   for modelled and non-modelled names and for the builder path.
 
+- **Quoted-printable escapes trailing whitespace before a soft line break.** A
+  space or tab that exactly filled the content budget of an encoded line was
+  emitted literally before the encoder inserted `=` CRLF, so the line ended with
+  literal SP/TAB immediately before the soft break. The encoder now treats that
+  boundary as trailing output whitespace and escapes it. Pinned by the
+  `MAX_QUOTED_PRINTABLE_LINE - 1` boundary tests for space and tab in
+  `tests/rfc_limits.rs`.
 - **`ED25519 PRIVATE KEY` is no longer accepted as a key label.**
   Both private-key decoders this crate routes to (`ed25519-dalek` and `rsa`) require the
   standard PKCS#8 label `PRIVATE KEY`, so a block labelled `ED25519 PRIVATE KEY` could never
