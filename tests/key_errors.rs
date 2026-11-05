@@ -1,14 +1,14 @@
 //! A PEM key that fails to decode reports a typed cause, not a flattened string.
 //!
 //! Audit finding (issue #7): `SigningKey::from_pem` rendered the PKCS#1/PKCS#8
-//! parser errors into `Error::InvalidKey(String)`, so `Error::source()` was always
-//! `None` and the failed Ed25519 probe vanished before the RSA fallback ran. These
-//! tests pin the replacement: the cause survives, the stage is classified, and no key
-//! material reaches the message.
+//! parser errors into the bare string `Error::InvalidKey` carried, so
+//! `Error::source()` was always `None` and the failed Ed25519 probe vanished before
+//! the RSA fallback ran. These tests pin the replacement: the cause survives, the
+//! stage is classified, and no key material reaches the message.
 #![cfg(feature = "dkim")]
 
 use mime_message::dkim::SigningKey;
-use mime_message::{Error, KeyParseError};
+use mime_message::{Error, KeyParseError, KeyRejected};
 
 /// Wraps a base64 body in a PEM envelope with the given label.
 fn pem(label: &str, body: &str) -> String {
@@ -117,9 +117,14 @@ fn the_same_input_produces_equal_errors() {
 #[test]
 fn unsupported_labels_stay_a_plain_invalid_key_without_a_source() {
     let error = SigningKey::from_pem(&pem("CERTIFICATE", "MAA=")).unwrap_err();
-    assert!(
-        matches!(error, Error::InvalidKey(_)),
+    assert_eq!(
+        error,
+        Error::InvalidKey(KeyRejected::UnsupportedPemLabel),
         "an unknown label is our own rejection, not a parser failure: {error:?}"
+    );
+    assert!(
+        !error.to_string().contains("CERTIFICATE"),
+        "the rejected label must not be echoed: {error}"
     );
     assert!(
         std::error::Error::source(&error).is_none(),
@@ -130,8 +135,9 @@ fn unsupported_labels_stay_a_plain_invalid_key_without_a_source() {
 #[test]
 fn the_label_match_stays_case_sensitive() {
     let error = SigningKey::from_pem(&pem("rsa private key", "MAA=")).unwrap_err();
-    assert!(
-        matches!(error, Error::InvalidKey(_)),
+    assert_eq!(
+        error,
+        Error::InvalidKey(KeyRejected::UnsupportedPemLabel),
         "a lower-case label is unsupported, not decoded: {error:?}"
     );
 }

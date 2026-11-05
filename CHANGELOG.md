@@ -45,6 +45,17 @@ manifest disagree.
 
 ### Changed
 
+- **Breaking (the next release is `0.4.0`): `Error::InvalidKey` carries a `KeyRejected`, not a
+  `String`.** A caller that matched `Error::InvalidKey(message)` now receives
+  `Error::InvalidKey(reason)` and can match the stage — `NotPem`, `UnsupportedPemLabel`,
+  `NotBase64 { what }`, `WrongLength { what, expected, found }`,
+  `BelowMinimumBits { bits, minimum }`, `MissingPublicKey`, `RevokedKey`,
+  `UnsupportedKeyType`, `UnsupportedRecordVersion`, `TagWithoutEquals`, `EmptyTagName`,
+  `DuplicateTag`, `InvalidRsaPublicKey`, `InvalidEd25519PublicKey` — instead of parsing a
+  sentence. `KeyRejected` is `#[non_exhaustive]`, `Copy` and `Eq`, so `Error` stays
+  comparable and a new reason is a minor release. `Error::source()` is still `None` for
+  `InvalidKey`: the reason is the whole classification, and `InvalidKeyPem` remains the one
+  variant with a cause chain.
 - **Breaking (the next release is `0.4.0`): a structural parse failure now carries its location.**
   `Error::InvalidBase64` was a unit variant, and `MalformedHeader` / `InvalidContentType` carried text
   but no position, so an error inside a multipart body said *what* failed and never *where*: the
@@ -72,7 +83,6 @@ manifest disagree.
   asserts every reported offset is a non-whitespace byte of the caller's input or its end. Callers
   that matched these three variants need the new shapes; that belongs to the `0.4.0` batch, not a
   patch.
-
 - **Breaking (the next release is `0.4.0`): the payload types are `#[non_exhaustive]`.**
   `Attachment`, `dkim::SignParams` and `dkim::SignatureHeader` now say so explicitly, so a
   field can be added (`Content-Disposition`, an `x=` expiry, a `q=` query method) without a
@@ -88,6 +98,22 @@ manifest disagree.
   doctest gate.
 
 ### Security
+
+- **`Error::InvalidKey` can no longer carry key material, by construction.** The variant was
+  `InvalidKey(String)` with derived `Debug` and `Display`, and its call sites interpolated
+  third-party parser text and an unsupported PEM label, so the documented promise "the message
+  never contains key material" held only as long as every call site kept it. The payload is now
+  `KeyRejected`: a closed enum whose fields are byte counts, bit counts and constants of this
+  crate (`"Ed25519 seed"`, `"Ed25519 key"`, `"p="`), with no `String` to write a PEM body, a seed
+  or a DNS `p=` value into. A tag-list defect is classified where the list is parsed (the
+  signature path keeps its detailed message), and the parser text that used to be rendered no
+  longer reaches the key message at all. Pinned by `tests/key_redaction.rs`: every reason is
+  rendered and checked for `BEGIN`, `PRIVATE` and any run of 100+ base64 characters; key-shaped
+  input is pushed through every PEM and DNS rejection and the whole source chain is checked end to
+  end; and each limit the variant reports is pinned at its boundary — 31/32/33 bytes for the
+  Ed25519 seed and for a `p=` key, and the RFC 8301 floor at exactly 1024 bits accepted
+  (`tests/fixtures/rsa-1024.pem`, new) versus 512 bits rejected with `bits` and `minimum`. The
+  fixture also pins that the boundary accepts a key rather than merely an error that looks right.
 
 - **The advisory gate now audits every feature, not just the default set.** `deny.toml`
   gains a `[graph] all-features = true` block, because cargo-deny otherwise resolves

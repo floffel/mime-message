@@ -207,11 +207,28 @@ pub enum Error {
     ///
     /// Covers PEM that is not a key, an unknown key type, a revoked (empty
     /// `p=`) DNS record, a key whose algorithm is unsupported, and keys below
-    /// the RFC 8301 minimum of 1024 RSA bits. The message never contains key
-    /// material.
+    /// the RFC 8301 minimum of 1024 RSA bits.
+    ///
+    /// The message never contains key material, and that is a property of this
+    /// type rather than of the call sites: the payload is [`KeyRejected`], a
+    /// closed set of reasons whose fields are byte counts and constants of this
+    /// crate. There is no `String` to interpolate a PEM body, a seed or a DNS
+    /// `p=` value into, so `Display`, `Debug` and a `{:?}` in a panic all print
+    /// the reason and nothing else.
+    ///
+    /// ```
+    /// use mime_message::dkim::SigningKey;
+    /// use mime_message::{Error, KeyRejected};
+    ///
+    /// let error = SigningKey::from_pem("; p=AA==").unwrap_err();
+    /// assert_eq!(error, Error::InvalidKey(KeyRejected::NotPem));
+    /// assert!(error.to_string().starts_with("invalid DKIM key: not a PEM block"));
+    /// // Nothing of the rejected input is echoed back.
+    /// assert!(!format!("{error} {error:?}").contains("p=AA=="));
+    /// ```
     #[cfg(feature = "dkim")]
     #[error("invalid DKIM key: {0}")]
-    InvalidKey(String),
+    InvalidKey(KeyRejected),
 
     /// A PEM private key does not decode as PKCS#1 or PKCS#8.
     ///
@@ -245,6 +262,146 @@ pub enum Error {
     #[cfg(feature = "dkim")]
     #[error("DKIM signature does not verify: a signed header was modified")]
     SignatureMismatch,
+}
+
+/// Why a DKIM key was rejected — the payload of [`Error::InvalidKey`].
+///
+/// This type exists so that the documented guarantee "the message never
+/// contains key material" is enforced by the type and not by every call site.
+/// A reason holds byte counts, `usize` bit counts, and `&'static str` constants
+/// of this crate; it has no `String` field, so a PEM body, a seed or a DNS `p=`
+/// value has nowhere to go. That also means the input never has to be scrubbed
+/// on the way out: `Display`, `Debug` and the panic path print the same fixed
+/// text.
+///
+/// What an operator still gets is the stage, which is the part that says what
+/// to fix: not a PEM block, a PEM label this crate does not read, a payload
+/// that is not base64, a decoded key of the wrong length, an RSA modulus under
+/// the RFC 8301 floor, or a DNS record with a broken tag list, the wrong
+/// version, no key, a revoked key, or an unknown key type.
+///
+/// ```
+/// use mime_message::dkim::SigningKey;
+/// use mime_message::{Error, KeyRejected};
+///
+/// // 44 base64 characters decode to 33 bytes: one past the 32-byte limit.
+/// let error = SigningKey::from_ed25519_seed_base64(&"A".repeat(44)).unwrap_err();
+/// assert_eq!(
+///     error,
+///     Error::InvalidKey(KeyRejected::WrongLength {
+///         what: "Ed25519 seed",
+///         expected: 32,
+///         found: 33,
+///     })
+/// );
+/// // The reason is fixed text plus the counts: nothing of the input.
+/// assert_eq!(
+///     error.to_string(),
+///     "invalid DKIM key: Ed25519 seed must be 32 bytes, got 33"
+/// );
+/// ```
+///
+/// `#[non_exhaustive]`: a key format this crate learns to read can add a
+/// reason, which is a minor release. Match with a `_` arm.
+#[cfg(feature = "dkim")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KeyRejected {
+    /// The text contains no `-----BEGIN …-----` line.
+    NotPem,
+    /// The PEM label is not one this crate reads (`RSA PRIVATE KEY`,
+    /// `PRIVATE KEY`, `ED25519 PRIVATE KEY`).
+    ///
+    /// The label itself is not repeated: it is caller text, and the message
+    /// must not echo caller bytes.
+    UnsupportedPemLabel,
+    /// A key payload is not base64.
+    NotBase64 {
+        /// Which payload, as a constant of this crate (`"Ed25519 seed"`,
+        /// `"p="`).
+        what: &'static str,
+    },
+    /// A decoded key payload has the wrong length.
+    WrongLength {
+        /// Which key, as a constant of this crate (`"Ed25519 seed"`,
+        /// `"Ed25519 key"`).
+        what: &'static str,
+        /// The length the format requires, in bytes.
+        expected: usize,
+        /// The length that was decoded, in bytes.
+        found: usize,
+    },
+    /// An RSA modulus is below the RFC 8301 §3.2 floor of 1024 bits.
+    BelowMinimumBits {
+        /// The modulus size that was read, in bits.
+        bits: usize,
+        /// The floor this crate enforces, in bits.
+        minimum: usize,
+    },
+    /// A DNS key record has a tag without `=`; it is not a `tag=value` list.
+    TagWithoutEquals,
+    /// A DNS key record has a tag with an empty name, for example `=x`.
+    EmptyTagName,
+    /// A DNS key record repeats a tag; RFC 6376 §3.6.1 allows each once.
+    DuplicateTag,
+    /// The `v=` tag is neither absent nor `DKIM1`.
+    ///
+    /// The tag value is not repeated: it is caller text.
+    UnsupportedRecordVersion,
+    /// The record has no `p=` tag at all.
+    MissingPublicKey,
+    /// The `p=` tag is present but empty — RFC 6376 §3.6.1 revokes the key,
+    /// so every signature made with it must be treated as unverifiable.
+    RevokedKey,
+    /// The `k=` tag names a key type this crate does not verify; `rsa` and
+    /// `ed25519` are the ones it does.
+    ///
+    /// The tag value is not repeated: it is caller text.
+    UnsupportedKeyType,
+    /// The `p=` payload is not an RSA `SubjectPublicKeyInfo` document.
+    ///
+    /// The parser's own words are not kept — a third-party `Display` is not a
+    /// place to trust with a guarantee about key material.
+    InvalidRsaPublicKey,
+    /// The `p=` payload is not a valid Ed25519 curve point.
+    InvalidEd25519PublicKey,
+}
+
+#[cfg(feature = "dkim")]
+impl std::fmt::Display for KeyRejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPem => write!(formatter, "not a PEM block (no label line)"),
+            Self::UnsupportedPemLabel => write!(
+                formatter,
+                "unsupported PEM label (expected a PKCS#1 or PKCS#8 private key block)"
+            ),
+            Self::NotBase64 { what } => write!(formatter, "{what} is not base64"),
+            Self::WrongLength {
+                what,
+                expected,
+                found,
+            } => write!(formatter, "{what} must be {expected} bytes, got {found}"),
+            Self::BelowMinimumBits { bits, minimum } => write!(
+                formatter,
+                "RSA key is {bits} bits, RFC 8301 requires at least {minimum}"
+            ),
+            Self::TagWithoutEquals => write!(formatter, "DNS record has a tag without '='"),
+            Self::EmptyTagName => write!(formatter, "DNS record has an empty tag name"),
+            Self::DuplicateTag => write!(formatter, "DNS record repeats a tag"),
+            Self::UnsupportedRecordVersion => {
+                write!(formatter, "unsupported key record version (expected DKIM1)")
+            }
+            Self::MissingPublicKey => write!(formatter, "DNS record has no p= tag"),
+            Self::RevokedKey => write!(formatter, "DNS record has a revoked key (p=)"),
+            Self::UnsupportedKeyType => write!(
+                formatter,
+                "unsupported key type in the k= tag (expected rsa or ed25519)"
+            ),
+            Self::InvalidRsaPublicKey => write!(formatter, "not an RSA public key"),
+            Self::InvalidEd25519PublicKey => write!(formatter, "not an Ed25519 public key"),
+        }
+    }
 }
 
 impl Error {

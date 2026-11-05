@@ -238,11 +238,14 @@ disk: the same code, runnable and asserted, is the doctest on
 - Keys: PKCS#1 and PKCS#8 RSA PEM, PKCS#8 Ed25519 PEM, a 32-byte Ed25519 seed
   (raw or base64) and DNS TXT records (`v=DKIM1; k=rsa|ed25519; p=…`). RSA keys
   below 1024 bits are rejected (RFC 8301), as are revoked (`p=`) records, unknown
-  key types and unparseable base64 — all `Error::InvalidKey`, which never
-  contains key material. A PEM block whose body does not decode is
-  `Error::InvalidKeyPem`: it carries the PKCS#1/PKCS#8 parser error as its
-  `source()`, so the cause chain reaches the DER layer instead of ending in a
-  rendered sentence.
+  key types and unparseable base64 — all `Error::InvalidKey`, whose payload is a
+  `KeyRejected`: a closed enum of reasons holding byte counts, bit counts and
+  fixed text, so there is no field a PEM body, a seed or a DNS `p=` value could be
+  written into. `Display`, `Debug` and a `{:?}` in a panic print the reason and
+  nothing else, whichever call site produced the error. A PEM block whose body
+  does not decode is `Error::InvalidKeyPem`: it carries the PKCS#1/PKCS#8 parser
+  error as its `source()`, so the cause chain reaches the DER layer instead of
+  ending in a rendered sentence.
 - Signing is deterministic: the timestamp is a parameter, header order comes from
   the rendered message, and `h=` lists every field present, duplicates once per
   occurrence so a receiver's bottom-up instance selection covers each one. `Bcc`
