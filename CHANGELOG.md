@@ -58,6 +58,14 @@ manifest disagree.
 
 ### Changed
 
+- **`Header` has bounded constructors for untrusted names, values and raw wire
+  values.** `Header::new_with_limits` and `Header::from_wire_with_limits` take
+  `&str` plus `Limits` and reject either input against
+  `Limits::max_header_bytes` with `Error::LimitExceeded` before copying the
+  string or unfolding the wire value. `Header::new` and `Header::from_wire`
+  keep their signatures and behaviour; their docs now point callers holding
+  untrusted input at the bounded path.
+
 - **Breaking (the next release is `0.4.0`): `Error::InvalidKey` carries a `KeyRejected`, not a
   `String`.** A caller that matched `Error::InvalidKey(message)` now receives
   `Error::InvalidKey(reason)` and can match the stage — `NotPem`, `UnsupportedPemLabel`,

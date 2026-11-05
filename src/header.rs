@@ -8,6 +8,7 @@
 //! any other field the crate has no opinion about.
 
 use crate::error::{Error, Result};
+use crate::Limits;
 
 /// One header field, as it arrived on the wire.
 ///
@@ -55,6 +56,9 @@ impl Header {
     /// [`Error::MalformedHeader`] when the name is empty or is not a run of
     /// `tchar`s (RFC 5322 §3.6.8), and [`Error::ControlCharacter`] when the
     /// value contains CR, LF, NUL or any other control character except a tab.
+    ///
+    /// For untrusted input, prefer [`Header::new_with_limits`], which checks a
+    /// byte budget before this constructor copies or trims the value.
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Result<Self> {
         let name = name.into();
         check_name(&name)?;
@@ -71,6 +75,33 @@ impl Header {
             raw_value,
             value: trimmed.to_string(),
         })
+    }
+
+    /// Creates a header field with an explicit [`Limits`] budget.
+    ///
+    /// The name and value are checked against [`Limits::max_header_bytes`]
+    /// before either is copied, trimmed or unfolded. The result is the same as
+    /// [`Header::new`] when both inputs fit the budget.
+    ///
+    /// ```
+    /// use mime_message::{Header, Limits};
+    ///
+    /// let mut limits = Limits::default();
+    /// limits.max_header_bytes = 4;
+    ///
+    /// assert!(Header::new_with_limits("X-A", "12", &limits).is_ok());
+    /// assert!(Header::new_with_limits("X-Long", "1", &limits).is_err());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// In addition to the checks in [`Header::new`], returns
+    /// [`Error::LimitExceeded`] when the name or value is longer than
+    /// [`Limits::max_header_bytes`].
+    pub fn new_with_limits(name: &str, value: &str, limits: &Limits) -> Result<Self> {
+        check_header_input_size(name, value, limits)?;
+        Self::new(name, value)
     }
 
     /// Builds a header from bytes that came off the wire.
@@ -91,6 +122,10 @@ impl Header {
     ///
     /// Rejects a malformed name, a bare CR or LF, a fold that does not start
     /// with whitespace, and control characters other than tab.
+    ///
+    /// For untrusted input, prefer [`Header::from_wire_with_limits`], which
+    /// checks a byte budget before this constructor copies or unfolds the raw
+    /// value.
     pub fn from_wire(name: impl Into<String>, raw_value: impl Into<String>) -> Result<Self> {
         let name = name.into();
         check_name(&name)?;
@@ -101,6 +136,33 @@ impl Header {
             name,
             raw_value,
         })
+    }
+
+    /// Builds a header from wire bytes with an explicit [`Limits`] budget.
+    ///
+    /// The name and raw value are checked against [`Limits::max_header_bytes`]
+    /// before either is copied or the raw value is unfolded. The result is the
+    /// same as [`Header::from_wire`] when both inputs fit the budget.
+    ///
+    /// ```
+    /// use mime_message::{Header, Limits};
+    ///
+    /// let mut limits = Limits::default();
+    /// limits.max_header_bytes = 13;
+    ///
+    /// assert!(Header::from_wire_with_limits("X-A", " fold\r\n\tvalue", &limits).is_ok());
+    /// assert!(Header::from_wire_with_limits("X-A", "12345678901234", &limits).is_err());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// In addition to the checks in [`Header::from_wire`], returns
+    /// [`Error::LimitExceeded`] when the name or raw value is longer than
+    /// [`Limits::max_header_bytes`].
+    pub fn from_wire_with_limits(name: &str, raw_value: &str, limits: &Limits) -> Result<Self> {
+        check_header_input_size(name, raw_value, limits)?;
+        Self::from_wire(name, raw_value)
     }
 
     /// The field name, with the casing it arrived with.
@@ -184,6 +246,27 @@ fn check_name(name: &str) -> Result<()> {
     } else {
         Err(Error::malformed_name(name))
     }
+}
+
+/// Rejects an input larger than the caller's per-header byte budget.
+///
+/// The check runs before `Header::new_with_limits` / `from_wire_with_limits`
+/// copy the inputs or unfold a raw value, so an oversized field costs one
+/// length comparison rather than an attacker-sized allocation.
+fn check_header_input_size(name: &str, value: &str, limits: &Limits) -> Result<()> {
+    if name.len() > limits.max_header_bytes {
+        return Err(Error::LimitExceeded {
+            what: "header name bytes",
+            limit: limits.max_header_bytes,
+        });
+    }
+    if value.len() > limits.max_header_bytes {
+        return Err(Error::LimitExceeded {
+            what: "header value bytes",
+            limit: limits.max_header_bytes,
+        });
+    }
+    Ok(())
 }
 
 /// The first byte of `value` that a header value may not contain, if any.
@@ -354,5 +437,49 @@ mod tests {
             Header::new("X-Grüße", "x"),
             Err(Error::MalformedHeader { .. })
         ));
+    }
+
+    #[test]
+    fn bounded_constructors_reject_at_max_plus_one() {
+        let limits = Limits {
+            max_header_bytes: 5,
+            ..Limits::default()
+        };
+
+        // The boundary is `>`, not `>=`: exactly the budget is accepted and one
+        // byte more is refused, for the name and the value of both constructors.
+        assert!(Header::new_with_limits("X-A", "12345", &limits).is_ok());
+        assert_eq!(
+            Header::new_with_limits("X-A", "123456", &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "header value bytes",
+                limit: 5,
+            }
+        );
+        assert!(Header::new_with_limits("X-ABC", "1", &limits).is_ok());
+        assert_eq!(
+            Header::new_with_limits("X-ABCD", "1", &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "header name bytes",
+                limit: 5,
+            }
+        );
+
+        assert!(Header::from_wire_with_limits("X-A", "12345", &limits).is_ok());
+        assert_eq!(
+            Header::from_wire_with_limits("X-A", "123456", &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "header value bytes",
+                limit: 5,
+            }
+        );
+        assert!(Header::from_wire_with_limits("X-ABC", "1", &limits).is_ok());
+        assert_eq!(
+            Header::from_wire_with_limits("X-ABCD", "1", &limits).unwrap_err(),
+            Error::LimitExceeded {
+                what: "header name bytes",
+                limit: 5,
+            }
+        );
     }
 }
