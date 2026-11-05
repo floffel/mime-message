@@ -222,6 +222,16 @@ manifest disagree.
   reads characters after a legal CRLF+WSP fold, rejects those separators
   everywhere else, and still renders accepted folded values unchanged. Pinned by
   the raw-parse and `set_header` cases in `tests/headers.rs`.
+- **Multipart boundaries are checked against the encoded payload and seeded from a
+  documented-stable digest.** Rendering derived a boundary from `DefaultHasher` and
+  wrote it into the delimiters without checking whether the body, HTML alternative or
+  a sanitised attachment filename contained the same delimiter line; a sender that
+  knew the content could make the receiver split a part early and absorb the rest
+  into the wrong part. The boundary seed now comes from SHA-256, so a stored draft
+  re-rendered after a toolchain bump keeps the same value, and the renderer retries
+  with a counter until both the outer and nested boundaries are absent at line
+  starts in every encoded part. Pinned by the body and attachment collision tests and
+  `boundary_choice_errors_when_no_candidate_is_safe`.
 - **RFC 2047 decoding strips the RFC 2231 language tag from a charset label.** A
   label such as `iso-8859-1*de` was handed to the charset registry whole, where
   it is unknown, so the fallback to UTF-8 turned every non-UTF-8 byte into a

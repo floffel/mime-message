@@ -16,12 +16,12 @@ exclude = [".github/**", "deny.toml", "fuzz/**"]
 base64 = "0.23"
 # Charset labels and decoding tables: the WHATWG registry, not a hand-rolled list.
 encoding_rs = "0.8"
+sha2 = "0.10"
 thiserror = "2"
 
-# DKIM is optional: it pulls in RSA/Ed25519 and a SHA-256 implementation.
+# DKIM is optional: it pulls in RSA and Ed25519.
 ed25519-dalek = { version = "2.2", optional = true, default-features = false, features = ["std", "pkcs8", "pem"] }
 rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "sha2", "pem"] }
-sha2 = { version = "0.10", optional = true }
 subtle = { version = "2.6", optional = true }
 
 [dev-dependencies]
@@ -31,7 +31,7 @@ sha2 = "0.10"
 
 [features]
 default = []
-dkim = ["dep:ed25519-dalek", "dep:rsa", "dep:sha2", "dep:subtle"]
+dkim = ["dep:ed25519-dalek", "dep:rsa", "dep:subtle"]
 
 # docs.rs builds every feature, so the `dkim` module is visible there.
 [package.metadata.docs.rs]

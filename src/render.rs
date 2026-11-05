@@ -5,6 +5,7 @@
 //! Rendering: headers, folding, encoding, multipart bodies.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::{check_recipients, cid, ensure_not_modelled, is_tchar, Mailbox, Message};
@@ -65,7 +66,8 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
     } else {
         "mixed"
     };
-    let boundary = boundary_for(message);
+    let (boundary, inner_boundary) =
+        choose_boundaries(message, has_html && !message.attachments.is_empty())?;
     push_header(
         &mut out,
         "Content-Type",
@@ -81,7 +83,9 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
         } else {
             // mixed(alternative(plain, html), attachments) or
             // related(alternative(plain, html), inline parts)
-            let inner = format!("{boundary}_alt");
+            let inner = inner_boundary
+                .as_deref()
+                .expect("nested alternative boundary was chosen above");
             write_part_header(
                 &mut out,
                 &boundary,
@@ -90,8 +94,8 @@ pub(crate) fn render(message: &Message) -> Result<Vec<u8>> {
                     format!("multipart/alternative; boundary=\"{inner}\""),
                 )],
             )?;
-            write_text_section(&mut out, &inner, "text/plain", &message.body)?;
-            write_text_section(&mut out, &inner, "text/html", html)?;
+            write_text_section(&mut out, inner, "text/plain", &message.body)?;
+            write_text_section(&mut out, inner, "text/html", html)?;
             out.push_str(&format!("--{inner}--{CRLF}"));
         }
     } else {
@@ -498,28 +502,123 @@ fn sanitise_filename(name: &str) -> String {
         .collect()
 }
 
-/// Deterministic boundary derived from the content — stable across runs.
-fn boundary_for(message: &Message) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+/// The largest number of boundary candidates tried before giving up.
+const MAX_BOUNDARY_ATTEMPTS: usize = 1024;
 
-    let mut hasher = DefaultHasher::new();
-    message.subject.hash(&mut hasher);
-    message.body.hash(&mut hasher);
-    message.html_body.hash(&mut hasher);
+/// Picks multipart boundary strings that do not occur as delimiter lines in any
+/// encoded part.
+fn choose_boundaries(
+    message: &Message,
+    nested_alternative: bool,
+) -> Result<(String, Option<String>)> {
+    choose_boundaries_with(
+        nested_alternative,
+        |attempt| boundary_for(message, attempt),
+        |candidate| boundary_conflicts(message, candidate),
+    )
+}
+
+fn choose_boundaries_with(
+    nested_alternative: bool,
+    mut candidate_at: impl FnMut(usize) -> String,
+    mut conflicts: impl FnMut(&str) -> bool,
+) -> Result<(String, Option<String>)> {
+    for attempt in 0..MAX_BOUNDARY_ATTEMPTS {
+        let boundary = candidate_at(attempt);
+        let inner = nested_alternative.then(|| format!("{boundary}_alt"));
+        let boundary_ok = !conflicts(&boundary);
+        let inner_ok = inner.as_deref().is_none_or(|inner| !conflicts(inner));
+        if boundary_ok && inner_ok {
+            return Ok((boundary, inner));
+        }
+    }
+    Err(Error::LimitExceeded {
+        what: "multipart boundary attempts",
+        limit: MAX_BOUNDARY_ATTEMPTS,
+    })
+}
+
+/// A deterministic multipart boundary derived from the content and the attempt
+/// number.
+///
+/// SHA-256 is a documented stable digest, so a stored draft that is re-rendered
+/// by a later build gets the same boundary. The collision loop, not the digest
+/// itself, keeps the boundary safe for the payload.
+fn boundary_for(message: &Message, attempt: usize) -> String {
+    let mut hasher = Sha256::new();
+    hash_text(&mut hasher, &message.subject);
+    hash_text(&mut hasher, &message.body);
+    hash_optional_text(&mut hasher, message.html_body.as_deref());
     for mailbox in &message.cc {
-        mailbox.address.hash(&mut hasher);
+        hash_text(&mut hasher, &mailbox.address);
     }
     for header in message.headers() {
-        header.name().hash(&mut hasher);
-        header.raw_value().hash(&mut hasher);
+        hash_text(&mut hasher, header.name());
+        hash_text(&mut hasher, header.raw_value());
     }
     for attachment in &message.attachments {
-        attachment.filename.hash(&mut hasher);
-        attachment.content_id.hash(&mut hasher);
-        attachment.data.hash(&mut hasher);
+        hash_text(&mut hasher, &attachment.filename);
+        hash_optional_text(&mut hasher, attachment.content_id.as_deref());
+        hash_bytes(&mut hasher, &attachment.data);
     }
-    format!("=_mime_message_{:016x}", hasher.finish())
+    hasher.update(u64::try_from(attempt).unwrap_or(u64::MAX).to_be_bytes());
+    let digest = hasher.finalize();
+    let mut head = [0_u8; 8];
+    head.copy_from_slice(&digest[..8]);
+    format!("=_mime_message_{:016x}", u64::from_be_bytes(head))
+}
+
+fn hash_text(hasher: &mut Sha256, text: &str) {
+    hash_bytes(hasher, text.as_bytes());
+}
+
+fn hash_optional_text(hasher: &mut Sha256, text: Option<&str>) {
+    match text {
+        Some(text) => {
+            hasher.update([1]);
+            hash_text(hasher, text);
+        }
+        None => hasher.update([0]),
+    }
+}
+
+fn hash_bytes(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+    hasher.update(bytes);
+}
+
+/// `true` when an encoded part contains a line that a receiver would split on.
+fn boundary_conflicts(message: &Message, boundary: &str) -> bool {
+    let delimiter = format!("--{boundary}");
+    let closing = format!("{delimiter}--");
+
+    let text_conflicts = |text: &str| {
+        let (_, encoded) = encode_text_body(text);
+        has_delimiter_line(&encoded, &delimiter, &closing)
+    };
+    if text_conflicts(&message.body) {
+        return true;
+    }
+    if message.html_body.as_deref().is_some_and(text_conflicts) {
+        return true;
+    }
+    message.attachments.iter().any(|attachment| {
+        let encoded = base64_wrapped(&attachment.data);
+        has_delimiter_line(&encoded, &delimiter, &closing)
+            || has_delimiter_line(&attachment.filename, &delimiter, &closing)
+            || attachment
+                .content_id
+                .as_deref()
+                .is_some_and(|id| has_delimiter_line(id, &delimiter, &closing))
+    })
+}
+
+fn has_delimiter_line(text: &str, delimiter: &str, closing: &str) -> bool {
+    text.split('\n').any(|raw_line| {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        let trimmed = line.trim_end_matches([' ', '\t']);
+        trimmed == delimiter || trimmed == closing
+    })
 }
 
 #[cfg(test)]
@@ -538,5 +637,85 @@ mod tests {
             message.render().unwrap_err(),
             Error::DuplicateHeader("Subject".to_string())
         );
+    }
+
+    #[test]
+    fn boundary_collision_detection_sees_a_body_line() {
+        let mut message =
+            Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nx").expect("parse");
+        message.body = "before\n--=_mime_message_0123456789abcdef\nafter".to_string();
+
+        assert!(boundary_conflicts(
+            &message,
+            "=_mime_message_0123456789abcdef"
+        ));
+        assert!(!boundary_conflicts(&message, "not-the-boundary"));
+    }
+
+    #[test]
+    fn boundary_collision_detection_sees_an_attachment_line() {
+        let mut message =
+            Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nx").expect("parse");
+        message.attachments.push(crate::Attachment::new(
+            "note\n--=_mime_message_0123456789abcdef\n.txt",
+            "text/plain",
+            Vec::new(),
+        ));
+
+        assert!(boundary_conflicts(
+            &message,
+            "=_mime_message_0123456789abcdef"
+        ));
+    }
+
+    #[test]
+    fn boundary_choice_skips_a_conflicting_candidate() {
+        let (boundary, inner) = choose_boundaries_with(
+            true,
+            |attempt| format!("candidate-{attempt}"),
+            |candidate| candidate == "candidate-0",
+        )
+        .expect("second candidate is safe");
+
+        assert_eq!(boundary, "candidate-1");
+        assert_eq!(inner.as_deref(), Some("candidate-1_alt"));
+    }
+
+    #[test]
+    fn boundary_choice_skips_body_and_filename_candidate() {
+        let mut message =
+            Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nx").expect("parse");
+        let candidate = boundary_for(&message, 0);
+        message.body = format!("before\n--{candidate}\nafter");
+        message.attachments.push(crate::Attachment::new(
+            format!("note\n--{candidate}\n.txt"),
+            "text/plain",
+            Vec::new(),
+        ));
+
+        assert!(boundary_conflicts(&message, &candidate));
+        let (chosen, _) = choose_boundaries(&message, false).expect("a safe boundary");
+        assert_ne!(chosen, candidate);
+        assert!(!boundary_conflicts(&message, &chosen));
+    }
+
+    #[test]
+    fn boundary_choice_errors_when_no_candidate_is_safe() {
+        assert_eq!(
+            choose_boundaries_with(false, |attempt| format!("candidate-{attempt}"), |_| true),
+            Err(Error::LimitExceeded {
+                what: "multipart boundary attempts",
+                limit: MAX_BOUNDARY_ATTEMPTS,
+            })
+        );
+    }
+
+    #[test]
+    fn boundary_seed_is_deterministic_and_attempt_sensitive() {
+        let message =
+            Message::parse("From: a@example.com\r\nTo: b@example.com\r\n\r\nx").expect("parse");
+        let first = boundary_for(&message, 0);
+        assert_eq!(first, boundary_for(&message, 0));
+        assert_ne!(first, boundary_for(&message, 1));
     }
 }
