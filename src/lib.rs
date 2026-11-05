@@ -864,10 +864,14 @@ impl MessageBuilder {
     ///
     /// # Errors
     ///
-    /// Fails when `From:` is missing or there is neither a `To:` nor a `Bcc:`
-    /// recipient.
+    /// Fails when `From:` is missing, a mailbox address is malformed, or there is
+    /// neither a `To:` nor a `Bcc:` recipient.
     pub fn build(self) -> Result<Message> {
         let from = self.from.ok_or(Error::EmptyHeader("From"))?;
+        parse::validate_address(&from.address)?;
+        for mailbox in self.to.iter().chain(&self.cc).chain(&self.bcc) {
+            parse::validate_address(&mailbox.address)?;
+        }
         if self.to.is_empty() && self.bcc.is_empty() {
             return Err(Error::NoRecipients);
         }

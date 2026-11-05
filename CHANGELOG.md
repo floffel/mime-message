@@ -105,6 +105,14 @@ manifest disagree.
   path capped it at 120 bytes. Both paths now build the error through `Error::invalid_mailbox`,
   the payload is truncated to 120 bytes at construction, and `Display` escapes it before rendering.
   Pinned by `tests/invalid_mailbox.rs`.
+- **Mailbox addresses are validated again when a message is built or rendered.** A
+  `Mailbox` built through the documented struct literal could carry `,`, `;` or `<`/`>`
+  outside a quoted local part, so `render_mailbox` could turn one mailbox into several
+  recipients. The shared validator now requires exactly one unquoted `@` and rejects
+  address-list separators outside a quoted local part; `MessageBuilder::build` validates
+  `From`, `To`, `Cc` and `Bcc`, and the renderer repeats the check before emitting a
+  mailbox. Pinned by builder and render-path regression tests for the recipient-list
+  injection.
 
 - **`Error::InvalidKey` can no longer carry key material, by construction.** The variant was
   `InvalidKey(String)` with derived `Debug` and `Display`, and its call sites interpolated

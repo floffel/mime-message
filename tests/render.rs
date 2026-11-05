@@ -89,6 +89,74 @@ fn malformed_mailboxes_are_rejected() {
 }
 
 #[test]
+fn builder_rejects_recipient_list_injection() {
+    let injected = "billing@corp.example, accountant@evil.example";
+    let builder = Message::builder().from("a@example.com").unwrap();
+
+    assert!(matches!(
+        builder.to(injected),
+        Err(Error::InvalidMailbox(_))
+    ));
+
+    let builder = Message::builder()
+        .from("a@example.com")
+        .unwrap()
+        .to("b@example.com")
+        .unwrap();
+    assert!(matches!(
+        builder.cc(injected),
+        Err(Error::InvalidMailbox(_))
+    ));
+
+    let mut message = simple();
+    message.to[0].address = injected.to_string();
+    assert_eq!(
+        message.render().unwrap_err(),
+        Error::InvalidMailbox(injected.to_string())
+    );
+}
+
+#[test]
+fn render_rejects_address_injection_from_public_mailboxes() {
+    for injected in [
+        "billing@corp.example, accountant@evil.example",
+        "billing@corp.example; accountant@evil.example",
+        "billing@corp.example <accountant@evil.example>",
+    ] {
+        let mut from = simple();
+        from.from.address = injected.to_string();
+        assert_eq!(
+            from.render().unwrap_err(),
+            Error::InvalidMailbox(injected.to_string())
+        );
+
+        let mut to = simple();
+        to.to[0].address = injected.to_string();
+        assert_eq!(
+            to.render().unwrap_err(),
+            Error::InvalidMailbox(injected.to_string())
+        );
+
+        let mut cc = simple();
+        cc.cc.push(cc.to[0].clone());
+        cc.cc[0].address = injected.to_string();
+        assert_eq!(
+            cc.render().unwrap_err(),
+            Error::InvalidMailbox(injected.to_string())
+        );
+    }
+}
+
+#[test]
+fn quoted_local_part_separators_are_not_injection() {
+    let mut message = simple();
+    message.to[0].address = "\"billing,corp;example\"@example.com".to_string();
+    let text = String::from_utf8(message.render().unwrap()).unwrap();
+    assert!(text.contains("To: \"billing,corp;example\"@example.com\r\n"));
+    assert_eq!(mime_message::parse(&text).unwrap().to.len(), 1);
+}
+
+#[test]
 fn message_without_recipient_is_rejected() {
     let err = Message::builder()
         .from("a@example.com")
