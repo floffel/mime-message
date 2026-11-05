@@ -122,27 +122,9 @@ fn push_preserved(out: &mut String, message: &Message) -> Result<()> {
     Ok(())
 }
 
-/// Allows CRLF only when it is followed by whitespace (a fold).
+/// Allows CRLF only when it is followed by whitespace and more content.
 fn check_no_line_break(value: &str, name: &str) -> Result<()> {
-    let bytes = value.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\r' => {
-                if bytes.get(index + 1) != Some(&b'\n')
-                    || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
-                {
-                    return Err(Error::control_value(name, b'\r'));
-                }
-                index += 2;
-            }
-            byte if crate::header::is_forbidden_byte(byte) => {
-                return Err(Error::control_value(name, byte));
-            }
-            _ => index += 1,
-        }
-    }
-    Ok(())
+    crate::header::check_folded_value(name, value)
 }
 
 fn write_part_header(

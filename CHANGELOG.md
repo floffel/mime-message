@@ -163,6 +163,14 @@ manifest disagree.
   copied verbatim. The gap is now consumed only after the second word decodes,
   so malformed input such as `=?UTF-8?Q?a?= =?UTF-8?X?b?=` renders as
   `a =?UTF-8?X?b?=` instead of losing the space.
+- **A header fold can no longer be the last thing in a value.** `Header::from_wire`
+  accepted `" a\r\n "` and `" a\r\n\t"` because a fold only had to start with
+  whitespace, not continue with content; the renderer then wrote the trailing
+  fold followed by its own CRLF, ending the header block and moving every later
+  structural header into the body. The fold check now requires content after the
+  continuation whitespace, rejects a value that starts with CRLF, and is shared
+  with the renderer's guard so `Header::from_wire` and `render` agree. Pinned by
+  the `from_wire` unit test and the header round-trip coverage in `tests/headers.rs`.
 
 - **A `ControlCharacter` rejection says which field and which byte, not just a name.**
   The variant was `ControlCharacter(String)` and every construction site passed the header *name*

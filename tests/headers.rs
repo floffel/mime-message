@@ -208,6 +208,46 @@ fn header_values_with_line_breaks_are_rejected() {
 }
 
 #[test]
+fn from_wire_rejects_folds_that_end_the_header_block() {
+    for bad in [" a\r\n ", " a\r\n\t", "\r\n b"] {
+        assert_eq!(
+            Header::from_wire("X-A", bad).unwrap_err(),
+            Error::ControlCharacter {
+                name: "X-A".to_string(),
+                byte: 0x0d,
+            },
+            "{bad:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn render_parse_render_keeps_the_header_set() {
+    let raw = concat!(
+        "From: a@example.com\r\n",
+        "Subject: hi\r\n",
+        "X-Folded: one\r\n",
+        "\ttwo\r\n",
+        "X-Other: value\r\n",
+        "\r\n",
+        "body",
+    );
+    let message = parse(raw).expect("parse");
+    let once = parse(&raw_of(&message)).expect("parse once");
+    let twice = parse(&raw_of(&once)).expect("parse twice");
+
+    let names = |message: &Message| {
+        message
+            .headers()
+            .iter()
+            .map(|header| (header.name().to_string(), header.raw_value().to_string()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&twice), names(&message));
+    assert_eq!(twice.subject, message.subject);
+}
+
+#[test]
 fn parsed_header_names_are_validated_like_rendered_ones() {
     assert!(matches!(
         parse("From: a@example.com\r\nX A: 1\r\n\r\nx"),

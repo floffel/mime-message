@@ -168,7 +168,7 @@ impl Header {
 pub(crate) fn unfold(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for (index, line) in raw.split("\r\n").enumerate() {
-        let line = line.trim();
+        let line = line.trim_matches(|ch| ch == ' ' || ch == '\t');
         if index > 0 && !line.is_empty() {
             out.push(' ');
         }
@@ -216,8 +216,11 @@ fn check_value(name: &str, value: &str) -> Result<()> {
 }
 
 /// Validates a raw value that may contain CRLF folds.
-fn check_folded_value(name: &str, raw: &str) -> Result<()> {
+pub(crate) fn check_folded_value(name: &str, raw: &str) -> Result<()> {
     let bytes = raw.as_bytes();
+    if bytes.starts_with(b"\r\n") {
+        return Err(Error::control_value(name, b'\r'));
+    }
     let mut index = 0usize;
     while index < bytes.len() {
         match bytes[index] {
@@ -228,6 +231,13 @@ fn check_folded_value(name: &str, raw: &str) -> Result<()> {
                 if bytes.get(index + 1) != Some(&b'\n')
                     || !matches!(bytes.get(index + 2), Some(b' ' | b'\t'))
                 {
+                    return Err(Error::control_value(name, b'\r'));
+                }
+                let mut after_wsp = index + 2;
+                while matches!(bytes.get(after_wsp), Some(b' ' | b'\t')) {
+                    after_wsp += 1;
+                }
+                if after_wsp == bytes.len() {
                     return Err(Error::control_value(name, b'\r'));
                 }
                 index += 2;
@@ -250,6 +260,7 @@ mod tests {
         assert_eq!(unfold(" a"), "a");
         assert_eq!(unfold(" a\r\n b"), "a b");
         assert_eq!(unfold(" a\r\n\tb\r\n  c"), "a b c");
+        assert_eq!(unfold(" a\r\n \u{2000}b"), "a \u{2000}b");
         assert_eq!(unfold(""), "");
         assert_eq!(unfold("   "), "");
     }
@@ -295,6 +306,9 @@ mod tests {
             (" a\rb", 0x0d),
             (" a\n b", 0x0a),
             (" a\u{7f}b", 0x7f),
+            (" a\r\n ", 0x0d),
+            (" a\r\n\t", 0x0d),
+            ("\r\n b", 0x0d),
         ] {
             assert_eq!(
                 Header::from_wire("X-A", broken).unwrap_err(),
