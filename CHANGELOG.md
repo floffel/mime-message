@@ -185,6 +185,12 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **`Attachment::with_content_id` rejects empty `Content-ID`s at construction.**
+  The setter used to store `Some("")` for `""`, `"<>"` or `"cid:<>"` while the
+  parser dropped empty IDs and the renderer rejected them later, so
+  `inline_parts()` counted an unrenderable inline part. The setter now returns
+  `Result<Self>` and shares the renderer's normalisation and validation rule, so
+  accepted attachments remain renderable and inline counting stays coherent.
 - **The recipient invariant is now shared by `build` and `render`, and `Cc` counts.** A
   `Cc`-only message no longer needs an invented `To:` recipient, and parsed or mutated
   messages with no `To:`, `Cc:` or `Bcc:` recipient now fail at render time with

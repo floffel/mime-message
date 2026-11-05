@@ -287,7 +287,8 @@ fn html_with_inline_parts_signs_and_verifies() {
         .html_body("<img src=\"cid:logo\">")
         .attachment(
             Attachment::new("logo.png", "image/png", vec![0x89, b'P', b'N', b'G'])
-                .with_content_id("logo"),
+                .with_content_id("logo")
+                .expect("valid content id"),
         )
         .build()
         .expect("build");

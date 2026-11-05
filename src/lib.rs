@@ -242,19 +242,27 @@ impl Attachment {
     /// Marks the part as inline content with a `Content-ID`.
     ///
     /// Angle brackets are optional and stripped, so `cid:logo` in the HTML
-    /// resolves to the same part as `cid:<logo>`.
+    /// resolves to the same part as `cid:<logo>`. Empty IDs, including `<>`
+    /// and `cid:<>`, are rejected before the attachment can report itself as
+    /// inline.
     ///
     /// ```
     /// use mime_message::Attachment;
     ///
     /// let logo = Attachment::new("logo.png", "image/png", vec![0x89, b'P'])
-    ///     .with_content_id("<logo@example.com>");
+    ///     .with_content_id("<logo@example.com>")?;
     /// assert_eq!(logo.content_id.as_deref(), Some("logo@example.com"));
+    /// # Ok::<(), mime_message::Error>(())
     /// ```
-    #[must_use]
-    pub fn with_content_id(mut self, id: impl AsRef<str>) -> Self {
-        self.content_id = Some(cid::normalise(id.as_ref()).to_string());
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EmptyHeader`] for an empty normalised ID, or
+    /// [`Error::ControlCharacter`] for a value the renderer could not safely
+    /// write between angle brackets.
+    pub fn with_content_id(mut self, id: impl AsRef<str>) -> Result<Self> {
+        self.content_id = Some(cid::checked_content_id(id.as_ref())?);
+        Ok(self)
     }
 }
 
@@ -560,7 +568,7 @@ impl Message {
     ///     .html_body("<img src=\"cid:logo\">")
     ///     .attachment(
     ///         Attachment::new("logo.png", "image/png", vec![0x89])
-    ///             .with_content_id("logo"),
+    ///             .with_content_id("logo")?,
     ///     )
     ///     .build()?;
     /// let part = message.part_by_content_id("cid:logo").expect("inline part");
@@ -584,7 +592,7 @@ impl Message {
     ///     .to("b@example.com")?
     ///     .body("hi")
     ///     .attachment(Attachment::new("a.pdf", "application/pdf", vec![1]))
-    ///     .attachment(Attachment::new("b.png", "image/png", vec![2]).with_content_id("b"))
+    ///     .attachment(Attachment::new("b.png", "image/png", vec![2]).with_content_id("b")?)
     ///     .build()?;
     /// assert_eq!(message.inline_parts().count(), 1);
     /// # Ok::<(), mime_message::Error>(())
@@ -617,7 +625,7 @@ impl Message {
     ///     .html_body("<img src=\"cid:logo\"> <img src=\"cid:missing\">")
     ///     .attachment(
     ///         Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
-    ///             .with_content_id("logo"),
+    ///             .with_content_id("logo")?,
     ///     )
     ///     .build()?;
     /// let html = message.rewrite_cid_references("<img src=\"cid:logo\">");

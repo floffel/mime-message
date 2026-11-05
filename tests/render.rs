@@ -414,7 +414,8 @@ fn no_header_line_exceeds_78_bytes_in_any_multipart_shape() {
     let mut related = alternative.clone();
     related.attachments.push(
         Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
-            .with_content_id("logo@example.com"),
+            .with_content_id("logo@example.com")
+            .expect("valid content id"),
     );
 
     for (shape, message) in [

@@ -136,7 +136,11 @@ fn the_renderer_names_the_field_it_rejected() {
         .to("b@example.com")
         .expect("to")
         .body("hi")
-        .attachment(Attachment::new("a.png", "image/png", vec![1]).with_content_id("a"))
+        .attachment(
+            Attachment::new("a.png", "image/png", vec![1])
+                .with_content_id("a")
+                .expect("valid content id"),
+        )
         .build()
         .expect("build");
 

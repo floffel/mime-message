@@ -141,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .html_body("<p><img src=\"cid:logo@example.com\" alt=\"Logo\"></p>")
         .attachment(
             Attachment::new("logo.png", "image/png", b"\x89PNG".to_vec())
-                .with_content_id("logo@example.com"),
+                .with_content_id("logo@example.com")?,
         )
         .build()?;
     let original_html = message.html_body.clone().unwrap_or_default();
