@@ -230,6 +230,13 @@ manifest disagree.
   failing `d=`/`s=` pair for diagnostics. Pinned by
   `a_malformed_signature_does_not_hide_a_matching_mismatch` and the RFC 8463
   tamper assertions.
+- **Header raw-value validation now has one implementation.** `Header::from_wire`,
+  the parser's header-block reader and the preserved-header render guard all use
+  the same `check_raw_value` predicate. The parser previously ran a separate,
+  weaker control-character scan over the *unfolded* value after `Header` had
+  already accepted the raw bytes, so a future fix to the fold-aware scanner
+  could miss the parse path. Parsed folded continuations are now checked exactly
+  as they arrived on the wire, with a regression for DEL in a continuation line.
 - **`Attachment::with_content_id` rejects empty `Content-ID`s at construction.**
   The setter used to store `Some("")` for `""`, `"<>"` or `"cid:<>"` while the
   parser dropped empty IDs and the renderer rejected them later, so

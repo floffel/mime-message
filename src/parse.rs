@@ -536,11 +536,10 @@ fn parse_header_block(block: &str, limits: &Limits, part: usize) -> Result<Heade
         entries: Vec::with_capacity(raw.len()),
     };
     for (name, value) in raw {
-        let header = Header::from_wire(name, value)?;
-        if let Some(byte) = crate::header::forbidden_value_byte(header.value()) {
-            return Err(Error::control_value(header.name(), byte));
-        }
-        headers.entries.push(header);
+        crate::header::check_raw_value(&name, &value)?;
+        headers
+            .entries
+            .push(Header::from_wire_after_raw_check(name, value));
     }
 
     Ok(headers)
