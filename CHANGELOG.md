@@ -39,6 +39,7 @@ manifest disagree.
 ### Added
 
 - **The `cid:` rewriter now rewrites only HTML URL positions and decodes HTML character references in those URLs.** It covers URL-bearing attributes, `srcset` candidates and CSS `url(...)` functions, skips comments and script text, fixes non-ASCII URL byte classification, and documents the remaining scanner limits after `lol_html`/`cssparser` adoption failed `cargo deny` licensing. Closes #23.
+- **Streaming parsing surface.** `stream::parse_reader()`, `stream::parse_reader_with_limits()` and `stream::StreamParser` parse from caller-supplied byte chunks with the same typed validation and `Limits` as the whole-buffer parser. Closes #11.
 
 - **A cargo-fuzz target for the `cid:` reference rewriter.** `fuzz/fuzz_targets/cid.rs`
   drives `cid::rewrite` and `Message::rewrite_cid_references` over arbitrary UTF-8 with

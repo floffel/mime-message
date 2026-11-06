@@ -1,4 +1,4 @@
-//! Build and parse RFC 5322 / MIME messages — no SMTP, no I/O, no network.
+//! Build and parse RFC 5322 / MIME messages — no SMTP, no sockets, no network.
 //!
 //! A parsed message keeps what the crate does not model: header fields it has
 //! no typed field for are preserved byte for byte ([`Header`]), `Bcc:`
@@ -43,6 +43,19 @@
 //! assert_eq!(message.body, "Hallo\r\n");
 //! # Ok::<(), mime_message::Error>(())
 //! ```
+//!
+//! Callers that receive bytes from a transport can parse incrementally without
+//! opening a socket themselves:
+//!
+//! ```
+//! use std::io::Cursor;
+//! use mime_message::stream;
+//!
+//! let raw = b"From: shop@example.com\r\nSubject: hi\r\n\r\nHallo";
+//! let message = stream::parse_reader(Cursor::new(raw))?;
+//! assert_eq!(message.subject, "hi");
+//! # Ok::<(), mime_message::Error>(())
+//! ```
 
 // The README is the crate-level documentation that runs: its Rust blocks are
 // compiled and executed as doctests (`cargo test --doc`), so the quick start
@@ -59,6 +72,7 @@ mod header;
 mod parse;
 mod render;
 pub mod rfc2047;
+pub mod stream;
 pub mod transfer;
 
 #[cfg(feature = "dkim")]
@@ -69,6 +83,7 @@ pub use error::{Base64DecodeError, Error, Result};
 pub use error::{KeyParseError, KeyRejected, SignatureCause, SignatureDefect};
 pub use header::Header;
 pub use parse::{parse, parse_with_limits, Limits};
+pub use stream::{parse_reader, parse_reader_with_limits, StreamParser};
 
 /// `tchar` from RFC 5322 §3.2.2: the bytes a header name may consist of.
 pub(crate) fn is_tchar(byte: u8) -> bool {
@@ -446,6 +461,46 @@ impl Message {
     /// See [`parse_with_limits`].
     pub fn parse_with_limits(raw: &str, limits: &Limits) -> Result<Self> {
         parse::parse_with_limits(raw, limits)
+    }
+
+    /// Reads an RFC 5322 / MIME message from `reader` with default [`Limits`].
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use mime_message::Message;
+    ///
+    /// let raw = b"From: a@example.com\r\nSubject: hi\r\n\r\nbody";
+    /// let message = Message::parse_reader(Cursor::new(raw))?;
+    /// assert_eq!(message.subject, "hi");
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`stream::parse_reader`] for the streaming-specific errors.
+    pub fn parse_reader(reader: impl std::io::Read) -> Result<Self> {
+        stream::parse_reader(reader)
+    }
+
+    /// Reads a message from `reader` with explicit [`Limits`].
+    ///
+    /// ```
+    /// use std::io::Cursor;
+    /// use mime_message::{Limits, Message};
+    ///
+    /// let mut limits = Limits::default();
+    /// limits.max_body_bytes = 4;
+    ///
+    /// let raw = b"From: a@example.com\r\n\r\n0123456789";
+    /// assert!(Message::parse_reader_with_limits(Cursor::new(raw), &limits).is_err());
+    /// # Ok::<(), mime_message::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`stream::parse_reader_with_limits`].
+    pub fn parse_reader_with_limits(reader: impl std::io::Read, limits: &Limits) -> Result<Self> {
+        stream::parse_reader_with_limits(reader, limits)
     }
 
     /// Every header field the crate does not model, in wire order.
