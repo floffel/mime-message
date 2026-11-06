@@ -316,6 +316,40 @@ fn preserved_headers_keep_legal_folds() {
 }
 
 #[test]
+fn unicode_whitespace_survives_unfolding_inside_a_line_and_at_a_fold() {
+    // #76: `fold_header` only folds at an ASCII space, so a value that ends a
+    // line in non-ASCII whitespace (U+00A0 here) must survive unfolding
+    // untouched. Inside a line and at a fold point the parsed value is the same.
+    for (label, raw_value, expected) in [
+        ("inside a line", " a\u{a0}b", "a\u{a0}b"),
+        ("at the value edge", " a\u{a0}", "a\u{a0}"),
+        ("leading edge", " \u{a0}a", "\u{a0}a"),
+        ("at a fold point", " abc\u{a0}\r\n def", "abc\u{a0} def"),
+        ("continuation is only NBSP", " abc\r\n \u{a0}", "abc \u{a0}"),
+        ("U+2000 at the edge", " a\u{2000}", "a\u{2000}"),
+    ] {
+        let header = Header::from_wire("X-A", raw_value).unwrap_or_else(|error| {
+            panic!("{label}: {raw_value:?} must be accepted, got {error:?}")
+        });
+        assert_eq!(header.value(), expected, "{label}");
+    }
+}
+
+#[test]
+fn rendered_unicode_whitespace_round_trips_byte_for_byte() {
+    // #76: a value that ends in non-ASCII whitespace used to lose the byte when
+    // it was unfolded, so render -> parse was not byte-identical. The raw value
+    // is re-emitted verbatim, and unfolding must keep the NBSP.
+    let raw = "From: a@example.com\r\nTo: b@example.com\r\nX-A: abc\u{a0}\r\n\r\nbody";
+    let once = parse(raw).expect("parse");
+    assert_eq!(once.header("X-A"), Some("abc\u{a0}"));
+    let rendered = raw_of(&once);
+    assert!(rendered.contains("X-A: abc\u{a0}\r\n"), "{rendered:?}");
+    let twice = parse(&rendered).expect("parse twice");
+    assert_eq!(twice.header("X-A"), Some("abc\u{a0}"));
+}
+
+#[test]
 fn from_wire_rejects_folds_that_end_the_header_block() {
     for bad in [" a\r\n ", " a\r\n\t", "\r\n b"] {
         assert_eq!(

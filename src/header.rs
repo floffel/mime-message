@@ -195,6 +195,10 @@ impl Header {
     /// RFC 5322 unfolding reads to a human. No RFC 2047 decoding is applied:
     /// unknown headers are returned as the sender wrote them.
     ///
+    /// Only ASCII folding whitespace (spaces and tabs) is trimmed from the ends.
+    /// Non-ASCII whitespace such as U+00A0 is part of the value and is kept, so
+    /// a rendered value round-trips byte for byte.
+    ///
     /// ```
     /// # use mime_message::Header;
     /// let header = Header::from_wire("Subject", " a\r\n b")?;
@@ -252,21 +256,26 @@ impl Hash for Header {
     }
 }
 
+/// Trims the ASCII folding whitespace (FWS) at both ends of `text`.
+///
+/// `fold_header` only ever folds at an ASCII space, and the per-line trim below
+/// only removes ASCII FWS, so the final trim has to agree: a Unicode whitespace
+/// character such as U+00A0 is part of the value and must survive unfolding.
+fn trim_header_sp(value: &str) -> &str {
+    value.trim_matches(|ch| ch == ' ' || ch == '\t')
+}
+
 /// Unfolds a raw value: continuation lines join with one space.
 pub(crate) fn unfold(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for (index, line) in raw.split("\r\n").enumerate() {
-        let line = line.trim_matches(|ch| ch == ' ' || ch == '\t');
+        let line = trim_header_sp(line);
         if index > 0 && !line.is_empty() {
             out.push(' ');
         }
         out.push_str(line);
     }
     trim_header_sp(&out).to_string()
-}
-
-fn trim_header_sp(value: &str) -> &str {
-    value.trim_matches(|ch| ch == ' ' || ch == '\t')
 }
 
 fn check_name(name: &str) -> Result<()> {
@@ -443,6 +452,20 @@ mod tests {
         assert_eq!(unfold(" a\r\n \u{2000}b"), "a \u{2000}b");
         assert_eq!(unfold(""), "");
         assert_eq!(unfold("   "), "");
+    }
+
+    #[test]
+    fn unfold_trims_ascii_fws_only() {
+        // A non-ASCII whitespace character is part of the value, whether it
+        // sits inside a line or ends one, so folding and unfolding agree.
+        assert_eq!(unfold(" a\u{a0}b"), "a\u{a0}b");
+        assert_eq!(unfold(" \u{a0}a"), "\u{a0}a");
+        assert_eq!(unfold(" a\u{a0}"), "a\u{a0}");
+        assert_eq!(unfold(" a\u{2000}"), "a\u{2000}");
+        // A continuation line made of non-ASCII whitespace survives the join.
+        assert_eq!(unfold(" a\r\n \u{a0}"), "a \u{a0}");
+        // ASCII FWS at the very ends is still stripped.
+        assert_eq!(unfold("\t a \t"), "a");
     }
 
     #[test]
