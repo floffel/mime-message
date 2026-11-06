@@ -1587,42 +1587,50 @@ fn strip_b_value(raw: &str) -> Result<String> {
     let bytes = raw.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
+    // Start of the tag name being scanned: reset after the header's `:` and
+    // after every tag separator `;`, so a `b=` inside another tag's value is
+    // never mistaken for the `b=` tag.
+    let mut name_start = 0usize;
+    let mut past_header_colon = false;
     while index < bytes.len() {
-        if bytes[index] == b'=' && is_tag_start(bytes, index) {
-            out.push(b'=');
-            index += 1;
-            // The value may be folded and wrapped; skip it entirely.
-            while index < bytes.len() && bytes[index] != b';' {
+        match bytes[index] {
+            b';' => {
+                out.push(b';');
+                index += 1;
+                name_start = index;
+                past_header_colon = true;
+            }
+            b':' if !past_header_colon => {
+                out.push(b':');
+                index += 1;
+                name_start = index;
+                past_header_colon = true;
+            }
+            b'=' if raw[name_start..index].trim().eq_ignore_ascii_case("b") => {
+                out.push(b'=');
+                index += 1;
+                // The value may be folded and wrapped; skip it entirely.
+                while index < bytes.len() && bytes[index] != b';' {
+                    index += 1;
+                }
+                // A `;` that still separates a following tag belongs to the
+                // template; one at the very end was added after signing.
+                if index < bytes.len() && !raw[index + 1..].trim().is_empty() {
+                    out.push(b';');
+                    index += 1;
+                    name_start = index;
+                } else {
+                    index += 1;
+                }
+            }
+            byte => {
+                out.push(byte);
                 index += 1;
             }
-            // A `;` that still separates a following tag belongs to the
-            // template; one at the very end was added after signing.
-            if index < bytes.len() && !raw[index + 1..].trim().is_empty() {
-                out.push(b';');
-            }
-            index += 1;
-            continue;
         }
-        out.push(bytes[index]);
-        index += 1;
     }
     String::from_utf8(out)
         .map_err(|_| Error::InvalidSignature("signature header is not UTF-8".to_string()))
-}
-
-/// True when the `=` at `index` closes a `b`/`B` tag.
-fn is_tag_start(bytes: &[u8], index: usize) -> bool {
-    let Some(name) = index.checked_sub(1).and_then(|at| bytes.get(at)) else {
-        return false;
-    };
-    if !matches!(name, b'b' | b'B') {
-        return false;
-    }
-    let before = index.saturating_sub(2);
-    match bytes.get(before) {
-        None => true,
-        Some(byte) => matches!(byte, b';' | b' ' | b'\t' | b'\r' | b'\n' | b':'),
-    }
 }
 
 /// `name: value` folded so lines stay below [`MAX_LINE`] columns.
@@ -2006,6 +2014,164 @@ mod tests {
         let (head, body) = split_head("A: 1");
         assert_eq!(head, "A: 1");
         assert_eq!(body, "");
+    }
+
+    mod wire_parser_properties {
+        use super::*;
+        use proptest::prelude::*;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        fn tag_name() -> impl Strategy<Value = String> {
+            "[a-z][a-z0-9-]{0,12}"
+        }
+
+        fn tag_value() -> impl Strategy<Value = String> {
+            proptest::string::string_regex("[^;]{0,40}")
+                .expect("tag value regex is valid")
+                .prop_filter("parse_tags trims values", |value| value.trim() == value)
+        }
+
+        fn tag_map() -> impl Strategy<Value = BTreeMap<String, String>> {
+            prop::collection::btree_map(tag_name(), tag_value(), 0..12)
+        }
+
+        fn tag_separator() -> impl Strategy<Value = String> {
+            prop_oneof![
+                Just(";".to_string()),
+                Just(";\r\n ".to_string()),
+                Just("\t;\t".to_string()),
+                Just(" \n ; \n".to_string()),
+            ]
+        }
+
+        fn render_entries(entries: &[(String, String)], separator: &str, trailing: bool) -> String {
+            let mut out = String::new();
+            for (index, (name, value)) in entries.iter().enumerate() {
+                if index > 0 {
+                    out.push_str(separator);
+                }
+                out.push_str(name);
+                out.push('=');
+                out.push_str(value);
+            }
+            if trailing {
+                out.push(';');
+            }
+            out
+        }
+
+        fn render_tag_map(
+            tags: &BTreeMap<String, String>,
+            separator: &str,
+            trailing: bool,
+        ) -> String {
+            let entries = tags
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect::<Vec<_>>();
+            render_entries(&entries, separator, trailing)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
+
+            /// Every tag list this crate can render parses back to the same map,
+            /// no matter which legal separator and fold shape carried it.
+            #[test]
+            fn rendered_tag_lists_round_trip(
+                tags in tag_map(),
+                separator in tag_separator(),
+                trailing in any::<bool>(),
+            ) {
+                let rendered = render_tag_map(&tags, &separator, trailing);
+                prop_assert_eq!(parse_tags(&rendered).expect("rendered tag list"), tags);
+            }
+
+            /// Duplicate tag names are rejected after the same name
+            /// normalisation the parser applies to accepted tags.
+            #[test]
+            fn duplicate_tag_names_are_rejected(
+                name in tag_name(),
+                first in tag_value(),
+                second in tag_value(),
+            ) {
+                let rendered = format!("{name}={first}; {}={second}", name.to_ascii_uppercase());
+                prop_assert_eq!(
+                    parse_tags(&rendered).expect_err("duplicate tag"),
+                    SignatureDefect::DuplicateTag {
+                        name: name.to_ascii_lowercase(),
+                    },
+                );
+            }
+
+            /// Arbitrary separators and Unicode are inputs, not panic switches;
+            /// any accepted map is already normalised and unique.
+            #[test]
+            fn arbitrary_unicode_tag_lists_are_total_and_normalised(input in any::<String>()) {
+                if let Ok(tags) = parse_tags(&input) {
+                    for (name, value) in &tags {
+                        prop_assert_eq!(name, &name.trim().to_ascii_lowercase());
+                        prop_assert_eq!(value, &value.trim());
+                    }
+                    let unique_names = tags.keys().collect::<BTreeSet<_>>();
+                    prop_assert_eq!(unique_names.len(), tags.len());
+                }
+            }
+
+            /// Stripping the signature value empties `b=`, keeps every other
+            /// tag, and leaves a value `parse_tags` can read again.
+            #[test]
+            fn strip_b_value_preserves_other_tags(
+                mut tags in tag_map(),
+                b_value in tag_value(),
+                separator in tag_separator(),
+                trailing in any::<bool>(),
+                b_last in any::<bool>(),
+            ) {
+                tags.remove("b");
+                let mut entries = tags.into_iter().collect::<Vec<_>>();
+                if b_last {
+                    entries.push(("b".to_string(), b_value));
+                } else {
+                    entries.insert(0, ("b".to_string(), b_value));
+                }
+                let raw = format!(
+                    "DKIM-Signature: {}",
+                    render_entries(&entries, &separator, trailing),
+                );
+
+                let stripped = strip_b_value(&raw).expect("valid UTF-8 strips");
+                let value = stripped
+                    .split_once(':')
+                    .expect("the header keeps its name")
+                    .1;
+                let reparsed = parse_tags(value).expect("stripped tag list");
+
+                prop_assert_eq!(reparsed.get("b").map(String::as_str), Some(""));
+                for (name, value) in entries {
+                    if name != "b" {
+                        prop_assert_eq!(reparsed.get(&name), Some(&value));
+                    }
+                }
+            }
+
+            /// The stripped value never contains a non-empty `b` tag whenever
+            /// it can still be read as a tag list, including arbitrary bytes.
+            #[test]
+            fn strip_b_value_is_total_for_arbitrary_bytes(
+                bytes in prop::collection::vec(any::<u8>(), 0..512)
+            ) {
+                let input = String::from_utf8_lossy(&bytes);
+                let stripped = strip_b_value(&input).expect("stripping keeps UTF-8 valid");
+                if let Some((_, value)) = stripped.split_once(':') {
+                    if let Ok(tags) = parse_tags(value) {
+                        if let Some(b) = tags.get("b") {
+                            prop_assert!(b.is_empty());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

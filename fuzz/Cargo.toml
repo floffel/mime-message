@@ -29,6 +29,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dkim_signature"
+path = "fuzz_targets/dkim_signature.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "header"
 path = "fuzz_targets/header.rs"
 test = false
@@ -38,6 +45,13 @@ bench = false
 [[bin]]
 name = "charset"
 path = "fuzz_targets/charset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dkim_dns"
+path = "fuzz_targets/dkim_dns.rs"
 test = false
 doc = false
 bench = false
