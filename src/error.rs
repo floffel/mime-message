@@ -204,6 +204,34 @@ pub enum Error {
     /// An attachment filename could escape a download directory.
     #[error("unsafe attachment filename: {0:?}")]
     UnsafeFilename(String),
+    /// The complete input message is larger than [`Limits::max_bytes`](crate::Limits::max_bytes).
+    ///
+    /// This is a refusal, not a syntax failure: the bytes were never parsed. The
+    /// parser checks the caller-provided input length first and returns this
+    /// error before allocating parser state or copying headers and bodies.
+    ///
+    /// ```
+    /// use mime_message::{parse_with_limits, Error, Limits};
+    ///
+    /// let raw = "From: a@example.com\r\n\r\nhi";
+    /// let mut limits = Limits::default();
+    /// limits.max_bytes = raw.len() - 1;
+    ///
+    /// assert_eq!(
+    ///     parse_with_limits(raw, &limits).unwrap_err(),
+    ///     Error::InputTooLarge {
+    ///         limit: raw.len() - 1,
+    ///         size: raw.len(),
+    ///     }
+    /// );
+    /// ```
+    #[error("input size {size} bytes exceeds the configured limit of {limit} bytes")]
+    InputTooLarge {
+        /// The configured maximum input size, in bytes.
+        limit: usize,
+        /// The actual input size, in bytes.
+        size: usize,
+    },
     /// A structural limit (nesting depth, part count, bytes) was exceeded.
     #[error("{what} exceeds the limit of {limit}")]
     LimitExceeded {
