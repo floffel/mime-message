@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use mime_message::{parse, parse_with_limits, Attachment, Error, Limits, Mailbox, Message};
+use mime_message::{parse, parse_with_limits, Attachment, Error, Header, Limits, Mailbox, Message};
 use proptest::prelude::*;
 
 const CONTENT_TYPES: [&str; 4] = [
@@ -422,6 +422,44 @@ proptest! {
             }
             Err(other) => prop_assert!(false, "unexpected {other:?} for {:?}", value),
             Ok(_) => prop_assert!(!forbidden, "0x{candidate:02x} must be rejected"),
+        }
+    }
+
+    /// A wire header that `Header::from_wire` accepts must present a value a
+    /// consumer can safely read: no CR, LF or DEL, and no ASCII folding
+    /// whitespace at either end. Its raw value must end on a real physical line,
+    /// except for the valid empty value. Passing the unfolded value back through
+    /// `Header::new` must not change it.
+    #[test]
+    fn header_from_wire_keeps_value_invariants(raw in any::<String>()) {
+        if let Ok(header) = Header::from_wire("X-A", raw) {
+            let value = header.value();
+            prop_assert!(
+                !value
+                    .bytes()
+                    .any(|byte| matches!(byte, b'\r' | b'\n' | 0x7f)),
+                "accepted value contains CR, LF or DEL: {value:?}"
+            );
+            prop_assert_eq!(
+                value.trim_matches(|ch| ch == ' ' || ch == '\t'),
+                value,
+                "accepted value is not WSP-trimmed"
+            );
+
+            let raw_value = header.raw_value();
+            if !raw_value.is_empty() {
+                prop_assert!(
+                    raw_value
+                        .rsplit("\r\n")
+                        .next()
+                        .is_some_and(|line| !line.is_empty()),
+                    "raw value ends with an empty physical line: {raw_value:?}"
+                );
+            }
+
+            let rebuilt =
+                Header::new(header.name(), value).expect("accepted value revalidates");
+            prop_assert_eq!(rebuilt.value(), value);
         }
     }
 
