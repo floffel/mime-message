@@ -119,10 +119,10 @@ fn invalid_base64_names_the_part_and_the_byte() {
         "{MULTIPART}Content-Type: application/octet-stream\r\n\
          Content-Transfer-Encoding: base64\r\n\r\nSGVs\r\nbG8*\r\n--b--\r\n"
     );
-    assert_eq!(
-        parse(&raw).unwrap_err(),
-        Error::InvalidBase64 { part: 3, offset: 9 }
-    );
+    let Error::InvalidBase64 { part, offset, .. } = parse(&raw).unwrap_err() else {
+        panic!("expected InvalidBase64");
+    };
+    assert_eq!((part, offset), (3, 9));
 }
 
 #[test]
@@ -130,10 +130,10 @@ fn invalid_base64_points_past_the_end_when_no_byte_is_wrong() {
     // One symbol is not a quad: there is no offending byte, so the location is
     // the body length, the position just past the payload.
     let raw = format!("{MULTIPART}Content-Transfer-Encoding: base64\r\n\r\nS\r\n--b--\r\n");
-    assert_eq!(
-        parse(&raw).unwrap_err(),
-        Error::InvalidBase64 { part: 3, offset: 1 }
-    );
+    let Error::InvalidBase64 { part, offset, .. } = parse(&raw).unwrap_err() else {
+        panic!("expected InvalidBase64");
+    };
+    assert_eq!((part, offset), (3, 1));
 
     // And the same body with a complete quad of the right length parses: the
     // boundary is the payload length, not a quirk of the sample.
@@ -144,10 +144,10 @@ fn invalid_base64_points_past_the_end_when_no_byte_is_wrong() {
 #[test]
 fn the_body_of_the_message_itself_is_part_one() {
     let raw = "From: a@example.com\r\nContent-Transfer-Encoding: base64\r\n\r\nQUJ*\r\n";
-    assert_eq!(
-        parse(raw).unwrap_err(),
-        Error::InvalidBase64 { part: 1, offset: 3 }
-    );
+    let Error::InvalidBase64 { part, offset, .. } = parse(raw).unwrap_err() else {
+        panic!("expected InvalidBase64");
+    };
+    assert_eq!((part, offset), (1, 3));
 }
 
 #[test]

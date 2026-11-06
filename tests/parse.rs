@@ -286,13 +286,10 @@ fn invalid_base64_is_a_typed_error() {
     let raw = with_from("Content-Transfer-Encoding: base64\r\n\r\n!!!!not base64!!!!");
     // The body of the message itself is part 1: the location is the body of the
     // part, not of the whole message.
-    assert_eq!(
-        parse(&raw).unwrap_err(),
-        Error::InvalidBase64 {
-            part: 1,
-            offset: 17
-        }
-    );
+    let Error::InvalidBase64 { part, offset, .. } = parse(&raw).unwrap_err() else {
+        panic!("expected InvalidBase64");
+    };
+    assert_eq!((part, offset), (1, 17));
 }
 
 #[test]

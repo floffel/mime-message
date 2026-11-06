@@ -16,7 +16,7 @@ use mime_message::{parse, Error, Message};
 /// none, because a caller trusts it.
 fn check_location(text: &str) {
     match parse(text) {
-        Err(Error::InvalidBase64 { part, offset }) => {
+        Err(Error::InvalidBase64 { part, offset, .. }) => {
             assert!(part >= 1, "a parsed payload belongs to an entity");
             assert!(
                 offset <= text.len(),

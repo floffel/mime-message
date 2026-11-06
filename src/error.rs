@@ -174,7 +174,7 @@ pub enum Error {
     ///     "\r\n",
     ///     "QUJD\r\nQUJ*\r\n",
     /// );
-    /// let Error::InvalidBase64 { part, offset } = parse(raw).unwrap_err() else {
+    /// let Error::InvalidBase64 { part, offset, .. } = parse(raw).unwrap_err() else {
     ///     panic!("the body is not base64");
     /// };
     /// assert_eq!(part, 1); // the message's own body
@@ -182,10 +182,12 @@ pub enum Error {
     ///
     /// // A standalone payload belongs to no message, and a length error points
     /// // one past the end instead of at a byte.
-    /// assert_eq!(
-    ///     mime_message::transfer::decode_base64("S").unwrap_err(),
-    ///     Error::InvalidBase64 { part: 0, offset: 1 }
-    /// );
+    /// let Error::InvalidBase64 { part, offset, .. } =
+    ///     mime_message::transfer::decode_base64("S").unwrap_err()
+    /// else {
+    ///     panic!("a standalone short payload is invalid base64");
+    /// };
+    /// assert_eq!((part, offset), (0, 1));
     /// ```
     #[error("invalid base64 payload (part {part}, offset {offset})")]
     InvalidBase64 {
@@ -195,6 +197,9 @@ pub enum Error {
         /// Byte offset of the rejected byte in that part's body, line breaks
         /// included; the body length when only its length or padding is wrong.
         offset: usize,
+        /// The decoder's own classification of the failure.
+        #[source]
+        source: Box<Base64DecodeError>,
     },
     /// An attachment filename could escape a download directory.
     #[error("unsafe attachment filename: {0:?}")]
@@ -238,8 +243,7 @@ pub enum Error {
     ///
     /// The parser's own answer is kept as this variant's
     /// [`source`](std::error::Error::source), so the cause chain reaches the
-    /// base64 and ASN.1 layer instead of stopping at a rendered string. This is
-    /// the only variant of [`enum@Error`] whose `source()` is `Some`.
+    /// base64 and ASN.1 layer instead of stopping at a rendered string.
     #[cfg(feature = "dkim")]
     #[error("invalid DKIM key: {0}")]
     InvalidKeyPem(#[source] Box<KeyParseError>),
@@ -250,6 +254,22 @@ pub enum Error {
     #[cfg(feature = "dkim")]
     #[error("invalid DKIM signature: {0}")]
     InvalidSignature(String),
+    /// A `DKIM-Signature` parse failure that keeps its typed cause.
+    ///
+    /// The rendered `message` is what callers saw before this variant existed.
+    /// The [`source`](std::error::Error::source) is the classification of the
+    /// tag-list, tag or base64 failure, so a caller can downcast instead of
+    /// parsing the message.
+    #[cfg(feature = "dkim")]
+    #[error("invalid DKIM signature: {message}")]
+    InvalidSignatureCause {
+        /// The operator-facing summary, with the same wording as the older
+        /// [`Error::InvalidSignature`] variant.
+        message: String,
+        /// The typed parse cause.
+        #[source]
+        source: Box<SignatureCause>,
+    },
     /// The message carries no `DKIM-Signature` header field.
     #[cfg(feature = "dkim")]
     #[error("message has no DKIM-Signature header field")]
@@ -441,6 +461,128 @@ impl Error {
         Self::ControlCharacter {
             name: name.to_string(),
             byte,
+        }
+    }
+}
+
+/// A base64 decoder failure, kept behind [`Error::InvalidBase64`].
+///
+/// The crate exposes the decoder's classification through
+/// [`source`](std::error::Error::source) without making the `base64` crate's
+/// error type part of this enum's public fields. The payload is the same error
+/// the decoder returned; [`Error::InvalidBase64`] adds the MIME part and the
+/// byte offset in the caller's input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Base64DecodeError {
+    source: base64::DecodeError,
+}
+
+impl Base64DecodeError {
+    pub(crate) fn new(source: base64::DecodeError) -> Self {
+        Self { source }
+    }
+}
+
+impl std::fmt::Display for Base64DecodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for Base64DecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Why a `DKIM-Signature` header could not be parsed into [`SignatureHeader`](crate::dkim::SignatureHeader).
+///
+/// This is the typed payload behind [`Error::InvalidSignatureCause`]. The
+/// older [`Error::InvalidSignature`] variant remains for failures that have no
+/// lower-level cause to preserve, such as a missing tag or an unsupported
+/// algorithm.
+#[cfg(feature = "dkim")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignatureCause {
+    /// The field's `tag=value; …` list is malformed.
+    Defect(SignatureDefect),
+    /// A tag whose value must be base64 did not decode.
+    Base64 {
+        /// The tag name, as a crate constant (`"bh="`, `"b="`).
+        tag: &'static str,
+        /// The decoder's own failure.
+        source: Base64DecodeError,
+    },
+}
+
+#[cfg(feature = "dkim")]
+impl std::fmt::Display for SignatureCause {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Defect(defect) => defect.fmt(formatter),
+            Self::Base64 { tag, source } => write!(formatter, "{tag} is not base64: {source}"),
+        }
+    }
+}
+
+#[cfg(feature = "dkim")]
+impl std::error::Error for SignatureCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Defect(defect) => Some(defect),
+            Self::Base64 { source, .. } => Some(source),
+        }
+    }
+}
+
+/// A defect in a DKIM `tag=value; …` list.
+///
+/// A caller can inspect this through [`SignatureCause::Defect`]. The fields
+/// carry only the already-truncated tag fragment or tag name, never the whole
+/// header value, so a malformed signature cannot smuggle an unbounded line into
+/// an error log.
+#[cfg(feature = "dkim")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SignatureDefect {
+    /// A tag has no `=`; carries the already truncated text.
+    TagWithoutEquals {
+        /// The offending fragment, truncated by the parser.
+        text: String,
+    },
+    /// A tag name is empty, as in `=x`.
+    EmptyTagName,
+    /// A tag appears twice; carries its lower-cased name.
+    DuplicateTag {
+        /// The tag name that appeared more than once.
+        name: String,
+    },
+}
+
+#[cfg(feature = "dkim")]
+impl std::fmt::Display for SignatureDefect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TagWithoutEquals { text } => write!(formatter, "tag without '=': {text:?}"),
+            Self::EmptyTagName => write!(formatter, "empty tag name"),
+            Self::DuplicateTag { name } => write!(formatter, "duplicate {name}= tag"),
+        }
+    }
+}
+
+#[cfg(feature = "dkim")]
+impl std::error::Error for SignatureDefect {}
+
+#[cfg(feature = "dkim")]
+impl SignatureDefect {
+    /// The key-side classification: a reason without any caller text.
+    pub(crate) fn rejected(&self) -> KeyRejected {
+        match self {
+            Self::TagWithoutEquals { .. } => KeyRejected::TagWithoutEquals,
+            Self::EmptyTagName => KeyRejected::EmptyTagName,
+            Self::DuplicateTag { .. } => KeyRejected::DuplicateTag,
         }
     }
 }

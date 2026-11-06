@@ -64,9 +64,9 @@ pub mod transfer;
 #[cfg(feature = "dkim")]
 pub mod dkim;
 
-pub use error::{Error, Result};
+pub use error::{Base64DecodeError, Error, Result};
 #[cfg(feature = "dkim")]
-pub use error::{KeyParseError, KeyRejected};
+pub use error::{KeyParseError, KeyRejected, SignatureCause, SignatureDefect};
 pub use header::Header;
 pub use parse::{parse, parse_with_limits, Limits};
 

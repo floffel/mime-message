@@ -51,7 +51,9 @@ use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq as _;
 
-use crate::error::{Error, KeyParseError, KeyRejected, Result};
+use crate::error::{
+    Base64DecodeError, Error, KeyParseError, KeyRejected, Result, SignatureCause, SignatureDefect,
+};
 use crate::{truncate, Message};
 
 /// Smallest RSA modulus accepted, in bits (RFC 8301 §3.2).
@@ -935,8 +937,10 @@ pub fn signatures(raw: &str) -> Result<Vec<SignatureHeader>> {
 impl SignatureHeader {
     fn parse(field: &Field) -> Result<Self> {
         let value = field.value();
-        let tags =
-            parse_tags(value).map_err(|defect| Error::InvalidSignature(defect.to_string()))?;
+        let tags = parse_tags(value).map_err(|defect| Error::InvalidSignatureCause {
+            message: defect.to_string(),
+            source: Box::new(SignatureCause::Defect(defect)),
+        })?;
         let require = |name: &str| -> Result<&str> {
             tags.get(name)
                 .map(String::as_str)
@@ -1433,49 +1437,10 @@ fn pem_label(pem: &str) -> Option<String> {
     None
 }
 
-/// A defect in a `tag=value; …` list.
-///
-/// The defect is classified rather than rendered at the source, so the key path
-/// can report it without the caller's text: [`Error::InvalidKey`] carries a
-/// [`KeyRejected`], and the value of a `p=` tag is key material that must not
-/// travel into an error message. The signature path keeps rendering the detail,
-/// which is what tells a sender which tag to fix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum TagDefect {
-    /// A tag has no `=`; carries the already truncated text, for the signature
-    /// path only.
-    WithoutEquals(String),
-    /// A tag name is empty (`=x`).
-    EmptyName,
-    /// A tag appears twice; carries its name, for the signature path only.
-    Duplicate(String),
-}
-
-impl std::fmt::Display for TagDefect {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WithoutEquals(part) => write!(formatter, "tag without '=': {part:?}"),
-            Self::EmptyName => write!(formatter, "empty tag name"),
-            Self::Duplicate(name) => write!(formatter, "duplicate {name}= tag"),
-        }
-    }
-}
-
-impl TagDefect {
-    /// The key-side classification: a reason without any caller text.
-    fn rejected(&self) -> KeyRejected {
-        match self {
-            Self::WithoutEquals(_) => KeyRejected::TagWithoutEquals,
-            Self::EmptyName => KeyRejected::EmptyTagName,
-            Self::Duplicate(_) => KeyRejected::DuplicateTag,
-        }
-    }
-}
-
 /// Parses a `tag=value; tag=value` list. Repeated tags are invalid.
 fn parse_tags(
     value: &str,
-) -> std::result::Result<std::collections::BTreeMap<String, String>, TagDefect> {
+) -> std::result::Result<std::collections::BTreeMap<String, String>, SignatureDefect> {
     let mut tags = std::collections::BTreeMap::new();
     for part in value.split(';') {
         let part = part.trim();
@@ -1483,14 +1448,16 @@ fn parse_tags(
             continue;
         }
         let Some((name, raw_value)) = part.split_once('=') else {
-            return Err(TagDefect::WithoutEquals(truncate(part, 40)));
+            return Err(SignatureDefect::TagWithoutEquals {
+                text: truncate(part, 40),
+            });
         };
         let name = name.trim().to_ascii_lowercase();
         if name.is_empty() {
-            return Err(TagDefect::EmptyName);
+            return Err(SignatureDefect::EmptyTagName);
         }
         if tags.contains_key(&name) {
-            return Err(TagDefect::Duplicate(name));
+            return Err(SignatureDefect::DuplicateTag { name });
         }
         tags.insert(name, raw_value.trim().to_string());
     }
@@ -1499,9 +1466,20 @@ fn parse_tags(
 
 fn decode_b64(value: &str, tag: &str) -> Result<Vec<u8>> {
     let compact: String = value.chars().filter(|ch| !ch.is_whitespace()).collect();
-    STANDARD
-        .decode(compact.as_bytes())
-        .map_err(|_| Error::InvalidSignature(format!("{tag} is not base64")))
+    STANDARD.decode(compact.as_bytes()).map_err(|error| {
+        let tag: &'static str = match tag {
+            "bh=" => "bh=",
+            "b=" => "b=",
+            _ => "DKIM tag",
+        };
+        Error::InvalidSignatureCause {
+            message: format!("{tag} is not base64"),
+            source: Box::new(SignatureCause::Base64 {
+                tag,
+                source: Base64DecodeError::new(error),
+            }),
+        }
+    })
 }
 
 /// Empties the `b=` value so the header can be hashed before it exists.
@@ -1984,7 +1962,10 @@ mod tests {
         let value = format!("v=1; x={};", "y".repeat(MAX_LINE_HARD + 10));
         let error = fold_field("DKIM-Signature", &value).unwrap_err();
         assert!(
-            matches!(error, Error::InvalidSignature(_)),
+            matches!(
+                error,
+                Error::InvalidSignature(_) | Error::InvalidSignatureCause { .. }
+            ),
             "unexpected error: {error:?}"
         );
     }
