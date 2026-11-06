@@ -8,12 +8,13 @@
 //! appear in real mail working (`utf16`, `latin9`), because RFC 2978 asks
 //! receivers to be liberal about how a sender spells a label.
 //!
-//! Only UTF-8 is decoded strictly. Everything else is decoded permissively so
-//! that a wrong or unknown `charset` parameter never fails a parse: US-ASCII and
-//! ISO-8859-1 are interpreted the way mail clients do (as Windows-1252, so
-//! ISO-8859-1 files decode correctly too), malformed byte sequences become
-//! U+FFFD, and an unknown or empty label falls back to UTF-8 with replacement
-//! characters.
+//! [`decode`] is deliberately permissive so that a wrong or unknown `charset`
+//! parameter never fails a parse: US-ASCII and ISO-8859-1 are interpreted the
+//! way mail clients do (as Windows-1252, so ISO-8859-1 files decode correctly
+//! too), malformed byte sequences become U+FFFD, and an unknown or empty label
+//! falls back to UTF-8 with replacement characters. Callers that need to detect
+//! corrupt input should use [`decode_strict`], which fails closed with a typed
+//! error instead of replacing malformed bytes.
 //!
 //! A byte-order mark is **not** stripped here: it decodes to U+FEFF and stays
 //! part of the text, because `decode(render(value)) == value` is an invariant of
@@ -21,6 +22,8 @@
 //! display freshly received mail can trim it themselves.
 
 use encoding_rs::{Encoding, ISO_8859_15, UTF_16BE, UTF_16LE, UTF_8};
+
+use crate::error::{Error, Result};
 
 /// Spellings that appear in real mail but are not WHATWG labels.
 ///
@@ -62,6 +65,39 @@ pub fn decode(bytes: &[u8], charset: &str) -> String {
     // note on round-tripping).
     let (text, _had_errors) = resolve(charset, bytes).decode_without_bom_handling(bytes);
     text.into_owned()
+}
+
+/// Decodes `bytes` from `charset` into a `String`, failing on malformed input.
+///
+/// This is the fail-closed counterpart to [`decode`]: the label is resolved the
+/// same way, unknown labels still fall back to UTF-8, and a byte-order mark is
+/// still kept as U+FEFF, but malformed byte sequences return
+/// [`Error::MalformedText`] instead of becoming U+FFFD.
+///
+/// ```
+/// use mime_message::charset;
+///
+/// assert_eq!(charset::decode_strict(b"Gr\xc3\xbc\xc3\x9fe", "utf-8")?, "Grüße");
+/// assert!(matches!(
+///     charset::decode_strict(b"a\xffb", "utf-8"),
+///     Err(mime_message::Error::MalformedText { charset: "UTF-8" })
+/// ));
+/// # Ok::<(), mime_message::Error>(())
+/// ```
+///
+/// # Errors
+///
+/// Returns [`Error::MalformedText`] when the bytes are not valid in the
+/// resolved encoding. The error names the canonical `encoding_rs` encoding that
+/// rejected the input, not the caller-supplied label.
+pub fn decode_strict(bytes: &[u8], charset: &str) -> Result<String> {
+    let encoding = resolve(charset, bytes);
+    encoding
+        .decode_without_bom_handling_and_without_replacement(bytes)
+        .map(std::borrow::Cow::into_owned)
+        .ok_or(Error::MalformedText {
+            charset: encoding.name(),
+        })
 }
 
 /// Resolves a charset label to its encoding, falling back to UTF-8.
@@ -238,6 +274,38 @@ mod tests {
         assert!(decoded.starts_with('a'));
         assert!(decoded.ends_with('b'));
         assert!(decoded.contains(char::REPLACEMENT_CHARACTER));
+    }
+
+    #[test]
+    fn strict_utf8_accepts_valid_text_and_rejects_malformed_bytes() {
+        assert_eq!(
+            decode_strict(b"Gr\xc3\xbc\xc3\x9fe", "utf-8").unwrap(),
+            "Grüße"
+        );
+        assert_eq!(decode_strict(b"", "utf-8").unwrap(), "");
+        assert_eq!(
+            decode_strict("a\u{feff}b".as_bytes(), "utf-8").unwrap(),
+            "a\u{feff}b"
+        );
+        assert_eq!(
+            decode_strict(b"a\xffb", "utf-8").unwrap_err(),
+            Error::MalformedText { charset: "UTF-8" }
+        );
+    }
+
+    #[test]
+    fn strict_decoding_uses_the_resolved_encoding() {
+        assert_eq!(decode_strict(&[0xA4], "latin-9").unwrap(), "€");
+        assert_eq!(
+            decode_strict(&[0x41], "utf-16").unwrap_err(),
+            Error::MalformedText {
+                charset: "UTF-16BE"
+            }
+        );
+        assert_eq!(
+            decode_strict(b"plain", "x-no-such-charset").unwrap(),
+            "plain"
+        );
     }
 
     #[test]

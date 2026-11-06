@@ -49,6 +49,7 @@ manifest disagree.
 - **`cid::rewrite` no longer treats an unterminated angle-bracket reference as the rest of
   the document.** A malformed `cid:<` sequence is left unchanged, and later valid `cid:`
   references in the HTML are still rewritten. Closes #24.
+- **`charset::decode_strict` reports malformed text instead of replacing bytes.** The existing permissive `charset::decode` entry point is unchanged; strict callers get `Error::MalformedText` with the canonical encoding name. Closes #20.
 
 - **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
   and `impl FromStr for Mailbox` route through the same address and display-name
