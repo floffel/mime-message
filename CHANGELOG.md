@@ -46,6 +46,11 @@ manifest disagree.
 - **The README is a compiled, runnable doctest, and the typical invoice mail is an example.** `src/lib.rs` includes `README.md` under `cfg(doctest)`, the quick start builds text + HTML alternative + PDF attachment and parses it back, and `examples/compose_and_parse.rs` exercises inline `Content-ID`, RFC 2231 filenames and `cid:` rewriting in CI.
 - **The release gate now pins the feature matrix and the no-I/O promise.** `tests/feature_matrix.rs` asserts that `default = []`, `dkim` is optional and feature-gated, both configurations run their error paths, and the manifest has no HTTP/runtime dependency; the README documents the choice. Closes #2.
 - **Property coverage for adversarial header shapes.** CRLF injection, unbalanced comments and broken RFC 2047 encoded-words are generated against `parse`, asserting no panic and no line separator in a decoded modelled field. The header fuzz target now checks the same invariant.
+- **Charset coverage is documented against the WHATWG Encoding Standard.** The
+  existing `encoding_rs` delegation already resolves every registered label,
+  including Shift_JIS, GBK/GB18030, Big5, EUC-JP/KR, KOI8-R/U and ISO-8859-2 …
+  -16; the docs now cite the registry and the RFC 2047 charset-label boundary is
+  pinned at 100/101 bytes. Closes #12.
 
 - **The `cid:` rewriter now rewrites only HTML URL positions and decodes HTML character references in those URLs.** It covers URL-bearing attributes, `srcset` candidates and CSS `url(...)` functions, skips comments and script text, fixes non-ASCII URL byte classification, and documents the remaining scanner limits after `lol_html`/`cssparser` adoption failed `cargo deny` licensing. Closes #23.
 - **Streaming parsing surface.** `stream::parse_reader()`, `stream::parse_reader_with_limits()` and `stream::StreamParser` parse from caller-supplied byte chunks with the same typed validation and `Limits` as the whole-buffer parser. Closes #11.

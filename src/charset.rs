@@ -1,7 +1,8 @@
 //! Charset decoding for MIME bodies and RFC 2047 encoded-words.
 //!
-//! Label resolution and decoding are delegated to [`encoding_rs`], the WHATWG
-//! encoding registry that browsers ship: every label listed there is understood
+//! Label resolution and decoding are delegated to [`encoding_rs`], the
+//! [WHATWG Encoding Standard] registry that browsers ship: every label listed
+//! there is understood
 //! (`Shift_JIS`, `GBK`, `Big5`, `KOI8-R`, `ISO-8859-2` … `ISO-8859-16`,
 //! `windows-125x`, `UTF-16` LE/BE, …), together with the aliases the registry
 //! defines for it. A short alias table keeps the non-standard spellings that
@@ -20,6 +21,8 @@
 //! part of the text, because `decode(render(value)) == value` is an invariant of
 //! this crate - a subject may legitimately start with U+FEFF. Callers that
 //! display freshly received mail can trim it themselves.
+//!
+//! [WHATWG Encoding Standard]: https://encoding.spec.whatwg.org/
 
 use encoding_rs::{Encoding, ISO_8859_15, UTF_16BE, UTF_16LE, UTF_8};
 

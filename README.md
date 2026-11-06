@@ -127,15 +127,17 @@ parsing surface for caller-supplied byte streams:
 - RFC 2047 decoding: `B` and `Q` encodings, adjacent encoded-words joined
   across line folds, mixed charsets per word, unknown charsets and unparseable
   words passed through verbatim rather than dropped.
-- Charsets: every label the WHATWG encoding registry knows (`encoding_rs`) - UTF-8,
-  UTF-16 LE/BE, ISO-8859-1 … -16, Windows-1251/1252, KOI8-R/U, Shift_JIS,
-  GBK/GB18030, Big5, EUC-JP/KR, … - plus the spellings real mail uses that the
-  registry does not list (`utf16`, `utf16be`, `latin9`). RFC 2978 asks receivers to
-  be liberal about labels: US-ASCII and ISO-8859-1 decode as Windows-1252 the way
-  mail clients do, and unknown or empty labels fall back to UTF-8 with replacement
-  characters instead of failing the parse. `charset::decode` stays permissive for
-  this parser path; callers that must fail closed on corrupt bytes use
-  `charset::decode_strict`.
+- Charsets: every label in the [WHATWG Encoding Standard] registry is resolved
+  through `encoding_rs` - UTF-8, UTF-16 LE/BE, ISO-8859-1 … -16,
+  Windows-1251/1252, KOI8-R/U, Shift_JIS, GBK/GB18030, Big5, EUC-JP/KR, … -
+  plus the spellings real mail uses that the registry does not list (`utf16`,
+  `utf16be`, `latin9`). RFC 2978 asks receivers to be liberal about labels:
+  US-ASCII and ISO-8859-1 decode as Windows-1252 the way mail clients do, and
+  unknown or empty labels fall back to UTF-8 with replacement characters instead
+  of failing the parse. `charset::decode` stays permissive for this parser path;
+  callers that must fail closed on corrupt bytes use `charset::decode_strict`.
+  Rendering is always UTF-8, so there is no caller-selected outbound charset to
+  validate.
 - Transfer encodings: `base64` (wrapped, unpadded and mixed-case input
   accepted), `quoted-printable` (soft line breaks), `7bit`/`8bit`/`binary`.
 - `multipart/mixed`, `multipart/alternative` and `multipart/related`, nested
@@ -147,6 +149,8 @@ parsing surface for caller-supplied byte streams:
   `filename*1*`).
 - `Content-Disposition: attachment` filenames, with path-traversal attempts
   rejected.
+
+[WHATWG Encoding Standard]: https://encoding.spec.whatwg.org/
 
 ### Streaming input
 
