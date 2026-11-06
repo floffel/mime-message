@@ -413,6 +413,9 @@ impl SigningKey {
     /// ```
     #[must_use]
     pub fn dns_record(&self) -> String {
+        // `mail-auth` parses DKIM1 records but has no public DKIM1 record
+        // serializer (`DomainKey` keeps the parsed key opaque and exposes only
+        // verification), so this method has to render the record locally.
         match &self.material {
             KeyMaterial::Rsa(private) => private.to_public_key().to_public_key_der().map_or_else(
                 // A record we cannot encode is published without a key, so
@@ -491,6 +494,11 @@ impl VerifyingKey {
     /// an RSA key, or an RSA key below 1024 bits — each as a [`KeyRejected`]
     /// reason, so nothing of the record reaches the message.
     pub fn from_dns_record(record: &str) -> Result<Self> {
+        // `mail-auth`'s `DomainKey` parser is not usable for this narrow path:
+        // it requires a DNS backend, exposes no public key bytes/type accessor
+        // to construct this crate's `VerifyingKey`, and cannot serialize a
+        // DKIM1 record. Keep parsing local so the public API and typed errors
+        // stay unchanged.
         let tags = parse_tags(record).map_err(|defect| Error::InvalidKey(defect.rejected()))?;
         if let Some(version) = tags.get("v") {
             if version.trim() != "DKIM1" {
