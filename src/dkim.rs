@@ -16,6 +16,14 @@
 //! network: the caller supplies the private key for signing and the public key
 //! from the selector's DNS record for verifying.
 //!
+//! The DKIM core is intentionally local even though `mail-auth` implements the
+//! same RFCs: `mail-auth` strict parsing rejects a signature that carries `l=`
+//! (`DkimError::BodyLengthTag`), while this crate's public API accepts the
+//! RFC 6376 `l=` form and deterministically verifies the signed body prefix.
+//! Delegating verification would therefore change this crate's tested contract
+//! instead of replacing implementation detail. The PEM label scan is not local:
+//! it delegates block framing and tag extraction to the maintained `pem` crate.
+//!
 //! ```
 //! use mime_message::{dkim, Message};
 //!
@@ -42,6 +50,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::Verifier as _;
+use pem::parse as parse_pem;
 use rsa::pkcs1::DecodeRsaPrivateKey as _;
 use rsa::pkcs1v15::{SigningKey as RsaSigningKey, VerifyingKey as RsaVerifyingKey};
 use rsa::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _, EncodePublicKey as _};
@@ -1525,15 +1534,7 @@ fn line_is_empty(line: &[u8], canonicalization: Canonicalization) -> bool {
 // ---------------------------------------------------------------------------
 
 fn pem_label(pem: &str) -> Option<String> {
-    for line in pem.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("-----BEGIN ") {
-            if let Some(label) = rest.strip_suffix("-----") {
-                return Some(label.trim().to_string());
-            }
-        }
-    }
-    None
+    parse_pem(pem).ok().map(|block| block.tag().to_string())
 }
 
 /// Parses a `tag=value; tag=value` list. Repeated tags are invalid.

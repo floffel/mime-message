@@ -81,6 +81,7 @@ manifest disagree.
 - Documented why DKIM DNS-key parsing and serialization stay local instead of using
   `mail-auth`: its DKIM1 record API is not usable without a DNS backend and exposes no
   public key bytes or record serializer for this crate's typed-key API. Closes #14.
+- **DKIM PEM label extraction now delegates to the maintained `pem` crate.** The local `pem_label` scanner is gone; DKIM key loading still keeps its own RFC 6376 verification path because `mail-auth` strict parsing rejects `l=` signatures that this crate's API deliberately verifies. Closes #34.
 
 - **Breaking (the next release is `0.4.0`): `SignParams` validates caller-supplied DKIM tags.**
   `SignParams::new`, `identity` and `signed_headers` now return `Result`, rejecting empty domain/selector, CR, LF, NUL,

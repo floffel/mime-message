@@ -136,6 +136,12 @@ fn pem_rejections_never_echo_the_input() {
     assert_eq!(error, Error::InvalidKey(KeyRejected::NotPem));
     assert_no_key_material(&rendered(&error));
 
+    // A BEGIN line alone is not a complete block, so the PEM parser reports
+    // "not PEM" without exposing the label or body.
+    let error = SigningKey::from_pem("-----BEGIN RSA PRIVATE KEY-----\nMAA=\n").unwrap_err();
+    assert_eq!(error, Error::InvalidKey(KeyRejected::NotPem));
+    assert_no_key_material(&rendered(&error));
+
     // A label that is itself key-shaped: the label is caller text, so it is
     // classified and not repeated.
     let error = SigningKey::from_pem(&pem(&body, "MAA=")).unwrap_err();
