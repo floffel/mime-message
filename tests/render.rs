@@ -403,6 +403,75 @@ fn every_rfc2047_word_decodes_on_its_own() {
     );
 }
 
+#[test]
+fn encode_word_pins_uppercase_utf8_base64_chunks() {
+    let mut message = simple();
+    message.subject = "ä".repeat(15);
+    let text = String::from_utf8(message.render().unwrap()).unwrap();
+    let subject = text
+        .split("\r\n")
+        .find(|line| line.starts_with("Subject:"))
+        .expect("subject header");
+
+    assert_eq!(
+        subject,
+        "Subject: =?UTF-8?B?w6TDpMOkw6TDpMOkw6TDpMOkw6TDpMOkw6TDpMOk?="
+    );
+}
+
+#[test]
+fn fold_header_counts_characters_not_utf8_bytes() {
+    let mut message = simple();
+    message.subject = "ä".repeat(17);
+
+    assert_eq!(
+        String::from_utf8(message.render().unwrap()).unwrap(),
+        concat!(
+            "From: \"Shop\" <shop@example.com>\r\n",
+            "To: kunde@example.com\r\n",
+            "Subject: =?UTF-8?B?w6TDpMOkw6TDpMOkw6TDpMOkw6TDpMOkw6TDpMOk?=\r\n",
+            " =?UTF-8?B?w6TDpA==?=\r\n",
+            "Date: Tue, 21 Oct 2026 10:00:00 +0000\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: text/plain; charset=utf-8\r\n",
+            "Content-Transfer-Encoding: 8bit\r\n",
+            "\r\n",
+            "Anbei die Rechnung."
+        )
+    );
+}
+
+#[test]
+fn base64_wrapped_uses_76_column_crlf_lines() {
+    let msg = simple().clone_with_attachment(Attachment::new(
+        "payload.bin",
+        "application/octet-stream",
+        vec![0x61; 58],
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    assert!(text.contains(concat!(
+        "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh\r\n",
+        "YQ==\r\n"
+    )));
+}
+
+#[test]
+fn sanitise_filename_replaces_escape_bytes() {
+    let msg = simple().clone_with_attachment(Attachment::new(
+        "report\\\";\r\nX-Injected: 1",
+        "application/octet-stream",
+        b"data".to_vec(),
+    ));
+    let text = String::from_utf8(msg.render().unwrap()).unwrap();
+
+    assert!(
+        text.contains("filename=\"report__;__X-Injected: 1\""),
+        "{text}"
+    );
+    assert!(!text.contains("\r\nX-Injected"), "{text}");
+}
+
 /// A line that is a header field or a folded continuation of one.
 fn is_header_line(line: &str) -> bool {
     if line.starts_with(' ') || line.starts_with('\t') {
