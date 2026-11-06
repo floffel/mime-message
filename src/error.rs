@@ -32,6 +32,20 @@ pub enum Error {
     /// The input contains no header block at all.
     #[error("message has no headers")]
     EmptyMessage,
+    /// The raw message bytes are not UTF-8.
+    ///
+    /// The offset is the byte index where UTF-8 validation stopped.
+    #[error("message is not valid UTF-8 at byte {offset}")]
+    InvalidUtf8 {
+        /// Byte index where UTF-8 validation stopped.
+        offset: usize,
+    },
+    /// Reading from a caller-supplied transport failed.
+    #[error("read failed: {kind}")]
+    Read {
+        /// The standard library's classification of the I/O failure.
+        kind: std::io::ErrorKind,
+    },
     /// A line in the header block is not `Name: value`.
     ///
     /// The payload says *where*: `part` is the 1-based ordinal of the MIME entity
@@ -498,6 +512,11 @@ impl std::fmt::Display for KeyRejected {
 }
 
 impl Error {
+    /// A transport read failure, carrying the standard library's error kind.
+    pub(crate) fn read(error: &std::io::Error) -> Self {
+        Self::Read { kind: error.kind() }
+    }
+
     /// A rejected mailbox through the builder or parser.
     ///
     /// The payload is attacker-controlled, so one constructor keeps the cap

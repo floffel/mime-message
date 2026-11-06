@@ -23,8 +23,8 @@ const MAX_HEADER_LINE: usize = 8 * 1024;
 /// Hard limits applied while parsing.
 ///
 /// The defaults are generous for real mail and small enough that a malicious
-/// message cannot exhaust memory: 32 levels of nesting, 1000 parts, 64 KiB of
-/// headers, 8 MiB per decoded body.
+/// message cannot exhaust memory: 16 MiB per raw message, 32 levels of nesting,
+/// 1000 parts, 64 KiB of headers, 8 MiB per decoded body.
 ///
 /// The struct is `#[non_exhaustive]`: start from [`Limits::default`] and adjust
 /// individual fields.
@@ -110,11 +110,14 @@ pub struct Limits {
     /// [`Error::InputTooLarge`](crate::Error::InputTooLarge) with this limit and
     /// the actual size.
     ///
-    /// Parsing is not streaming: the caller already holds the source `&str`, and
-    /// the parser can create decoded body copies and a part tree while it works.
-    /// Budget for a peak around 3× the input size, plus whatever the caller keeps
-    /// alive. The crate does no I/O, so the caller owns the outer size bound and
-    /// must read at most this many bytes in the first place.
+    /// [`stream::StreamParser`](crate::stream::StreamParser) applies the same
+    /// limit incrementally as chunks arrive, before a chunk is buffered.
+    ///
+    /// The whole-buffer parser reads the length, compares, and returns before it
+    /// copies headers or bodies, but it can still create decoded body copies and
+    /// a part tree while it works. Budget for a peak around 3× the input size,
+    /// plus whatever the caller keeps alive. The crate does no I/O, so the caller
+    /// owns the outer size bound and must read at most this many bytes.
     ///
     /// ```
     /// use mime_message::{parse_with_limits, Error, Limits};

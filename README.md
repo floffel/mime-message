@@ -1,8 +1,8 @@
 # mime-message
 
-Build **and parse** RFC 5322 / MIME email messages — no SMTP, no I/O, no async,
-no `unsafe`, no network access. Optional DKIM signing and verification behind a
-feature flag.
+Build **and parse** RFC 5322 / MIME email messages — no SMTP, no sockets, no
+async, no `unsafe`, no network access. Optional DKIM signing and verification
+behind a feature flag.
 
 ```rust
 use mime_message::{Attachment, Message};
@@ -93,7 +93,8 @@ quoted-printable. Attachments are always base64, wrapped at 76 characters.
 ## Parsing
 
 `parse()` returns a [`Message`] for the whole RFC 5322 + MIME surface this crate
-claims:
+claims. `stream::parse_reader()` and `stream::StreamParser` offer the same
+parsing surface for caller-supplied byte streams:
 
 - Header block: CRLF / LF / bare-CR line endings, folded (tab or space)
   continuation lines, comments, quoted display names, groups
@@ -126,6 +127,32 @@ claims:
   `filename*1*`).
 - `Content-Disposition: attachment` filenames, with path-traversal attempts
   rejected.
+
+### Streaming input
+
+`stream::parse_reader()` accepts any `std::io::Read`; `stream::StreamParser`
+accepts explicit chunks when a transport hands them over itself. Both enforce
+the same `Limits` as `parse_with_limits()`, including `max_bytes`, before a
+chunk is buffered:
+
+```rust
+use std::io::Cursor;
+use mime_message::{stream, Limits};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut limits = Limits::default();
+    limits.max_bytes = 64 * 1024;
+
+    let raw = b"From: shop@example.com\r\nSubject: hi\r\n\r\nHallo";
+    let message = stream::parse_reader_with_limits(Cursor::new(raw), &limits)?;
+    assert_eq!(message.subject, "hi");
+    Ok(())
+}
+```
+
+The parser buffers the accepted message bytes, then reuses the whole-buffer
+parser at EOF for the same header, MIME, depth, part-count and body validation.
+Chunks may split anywhere, including inside CRLF or a `multipart` boundary.
 
 ### Inline `cid:` parts
 
@@ -215,14 +242,16 @@ Defaults (see [`Limits`]): 32 MiB total input, 32 levels of nesting, 1000
 entities, 64 KiB of headers, 8 KiB per header line, 1000 header fields, 8 MiB
 per decoded body. `parse_with_limits()` takes tighter budgets.
 
-Parsing is not streaming: the whole message must be supplied as one `&str`, and
-the caller owns the outer size bound because the crate does no I/O. Give the
-parser a message only after reading at most `Limits::max_bytes` bytes; an input
-over that limit returns `InputTooLarge { limit, size }` before parser-owned
-allocations, not a syntax error. The parser does not stream, copies decoded
-bodies and builds a part tree, so budget for a peak around 3× the input size
-plus whatever the caller keeps alive. Tighten `max_bytes` (and `max_body_bytes`)
-for untrusted mail.
+The whole-buffer parser is not streaming: the caller already holds one `&str`
+and owns the outer size bound because the crate does no I/O. Give the parser a
+message only after reading at most `Limits::max_bytes` bytes; an input over that
+limit returns `InputTooLarge { limit, size }` before parser-owned allocations,
+not a syntax error. Because it copies decoded bodies and builds a part tree,
+budget for a peak around 3× the input size plus whatever the caller keeps alive.
+`stream::parse_reader()` and `stream::StreamParser` apply the same limits
+incrementally, so a caller reading from a socket or a file never has to buffer
+an over-limit message first. Tighten `max_bytes` (and `max_body_bytes`) for
+untrusted mail.
 
 `max_depth` counts `multipart` containers, not entities: the top-level entity is
 depth 0, a leaf part is accepted at any depth a container already reached, and a
@@ -304,12 +333,9 @@ by fitting the implementation to a guess.
 
 Documented rather than silently missing:
 
-- **Not a streaming parser.** The whole message must be in memory; the size
-  limits bound it. Reading from a socket is the caller's choice. This stays out
-  of scope, not scheduled.
 - **No DNS lookup during DKIM verification.** Fetching
-  `selector._domainkey.domain` is the caller's job: this crate does no I/O, and a
-  resolver would bring its own trust model.
+  `selector._domainkey.domain` is the caller's job: this crate does no network
+  I/O, and a resolver would bring its own trust model.
 - **No S/MIME, no OpenPGP.** Different problem, different threat model.
 - **No `rsa-sha1`, no `l=` on signing.** RFC 8301 deprecates SHA-1 and `l=` only
   weakens a signature. Both are still parsed (and `l=` honoured) on the
