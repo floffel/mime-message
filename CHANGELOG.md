@@ -211,6 +211,7 @@ manifest disagree.
   64 KiB + 1 is refused, and the error carries no key material.
 
 ### Fixed
+- **Base64 decoding rejects non-zero trailing bits.** `transfer::decode_base64` still accepts missing padding for MIME leniency, but final-quantum variants that decode to the same bytes are now rejected as `Error::InvalidBase64` instead of being silently accepted. Closes #64.
 - **`Header::new` trims only ASCII SP/HTAB, and `Header` equality follows `is()`.**
   `Header::new` used Rust's Unicode-aware `trim`, so `"\u{a0}Rechnung"` lost its
   leading no-break space before it ever reached a caller. The constructor and

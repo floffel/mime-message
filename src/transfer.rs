@@ -2,8 +2,9 @@
 //!
 //! Both decoders are deliberately lenient about the things real mail servers
 //! get wrong (line wrapping, missing padding, stray whitespace) and strict about
-//! the things that hide data (characters outside the alphabet). Neither can
-//! panic, and both bound their output by the input length.
+//! the things that hide data (characters outside the alphabet, non-zero trailing
+//! bits in the final base64 quantum). Neither can panic, and both bound their
+//! output by the input length.
 
 use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -11,19 +12,18 @@ use base64::Engine as _;
 
 use crate::error::{Base64DecodeError, Error, Result};
 
-/// Base64 that accepts missing padding and non-zero trailing bits.
+/// Base64 that accepts missing padding but requires canonical trailing bits.
 const LENIENT: GeneralPurpose = GeneralPurpose::new(
     &alphabet::STANDARD,
-    GeneralPurposeConfig::new()
-        .with_decode_padding_mode(DecodePaddingMode::Indifferent)
-        .with_decode_allow_trailing_bits(true),
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
 /// Decodes a base64 body or encoded-word payload.
 ///
 /// ASCII whitespace is ignored (MIME wraps base64 at 76 columns) and padding is
-/// optional. Any other character outside the alphabet is an
-/// [`Error::InvalidBase64`].
+/// optional. Non-zero trailing bits in the final quantum are rejected, so a
+/// payload has one canonical spelling up to optional padding. Any other
+/// character outside the alphabet is an [`Error::InvalidBase64`].
 ///
 /// ```
 /// use mime_message::transfer;
@@ -31,16 +31,19 @@ const LENIENT: GeneralPurpose = GeneralPurpose::new(
 /// assert_eq!(transfer::decode_base64("SGVsbG8=").unwrap(), b"Hello");
 /// // Wrapped and unpadded input decodes identically.
 /// assert_eq!(transfer::decode_base64("SGVs\r\nbG8").unwrap(), b"Hello");
+/// // The same bytes with non-zero trailing bits are not accepted.
+/// assert!(transfer::decode_base64("SGVsbG9=").is_err());
 /// assert!(transfer::decode_base64("SGVsbG8*").is_err());
 /// ```
 ///
 /// # Errors
 ///
 /// Returns [`Error::InvalidBase64`] when the payload contains characters outside
-/// the base64 alphabet or impossible padding. The error carries the byte offset
-/// in `input` — line breaks and spaces counted — of the byte the decoder
-/// rejected, or `input.len()` when only the length or the padding is wrong, and
-/// `part: 0`, because a payload decoded on its own is not part of a message.
+/// the base64 alphabet, impossible padding, or non-zero trailing bits in the
+/// final quantum. The error carries the byte offset in `input` — line breaks and
+/// spaces counted — of the byte the decoder rejected, or `input.len()` when only
+/// the length or the padding is wrong, and `part: 0`, because a payload decoded
+/// on its own is not part of a message.
 pub fn decode_base64(input: &str) -> Result<Vec<u8>> {
     decode_base64_in_part(input, 0)
 }
@@ -274,6 +277,26 @@ mod tests {
     }
 
     #[test]
+    fn base64_rejects_non_zero_trailing_bits() {
+        // Canonical padding and the unpadded MIME spelling decode identically.
+        assert_eq!(decode_base64("SGVsbG8=").unwrap(), b"Hello");
+        assert_eq!(decode_base64("SGVsbG8").unwrap(), b"Hello");
+
+        // The same final quantum with non-zero trailing bits is malleability,
+        // not a second spelling for the same bytes.
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("SGVsbG9=").unwrap_err()
+        else {
+            panic!("non-zero trailing bits must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 6));
+        let Error::InvalidBase64 { part, offset, .. } = decode_base64("SGVsbG9").unwrap_err()
+        else {
+            panic!("unpadded non-zero trailing bits must be InvalidBase64");
+        };
+        assert_eq!((part, offset), (0, 6));
+    }
+
+    #[test]
     fn base64_rejects_alphabet_violations() {
         let Error::InvalidBase64 { part, offset, .. } = decode_base64("SGVsbG8*").unwrap_err()
         else {
@@ -308,8 +331,8 @@ mod tests {
     /// position just past its end — which is still a position in the input.
     #[test]
     fn base64_length_errors_point_past_the_end() {
-        // Just inside the limit: two symbols are a complete quad.
-        assert_eq!(decode_base64("AB").unwrap(), vec![0]);
+        // Just inside the limit: two canonical symbols are a complete quad.
+        assert_eq!(decode_base64("AA").unwrap(), vec![0]);
         // One symbol short of a quad, wrapped the way a body arrives.
         let Error::InvalidBase64 { part, offset, .. } = decode_base64("S\r\n").unwrap_err() else {
             panic!("length violation must be InvalidBase64");
