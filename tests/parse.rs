@@ -1162,7 +1162,8 @@ fn a_koi8r_body_decodes_cyrillic() {
 #[test]
 fn a_utf16_body_decodes_both_byte_orders() {
     for (label, to_units) in [
-        ("utf-16", u16::to_le_bytes as fn(u16) -> [u8; 2]),
+        ("utf-16", u16::to_be_bytes as fn(u16) -> [u8; 2]),
+        ("utf-16le", u16::to_le_bytes as fn(u16) -> [u8; 2]),
         ("utf-16be", u16::to_be_bytes as fn(u16) -> [u8; 2]),
     ] {
         let units: Vec<u8> = "Grüße".encode_utf16().flat_map(to_units).collect();

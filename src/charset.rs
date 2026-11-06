@@ -28,7 +28,7 @@ use encoding_rs::{Encoding, ISO_8859_15, UTF_16BE, UTF_16LE, UTF_8};
 /// table exists solely so the labels the crate accepted before it delegated
 /// decoding keep their meaning. Nothing else belongs here.
 const NON_STANDARD_LABELS: [(&str, &Encoding); 5] = [
-    ("utf16", UTF_16LE),
+    ("utf16", UTF_16BE),
     ("utf16le", UTF_16LE),
     ("utf16be", UTF_16BE),
     ("latin9", ISO_8859_15),
@@ -58,22 +58,35 @@ const NON_STANDARD_LABELS: [(&str, &Encoding); 5] = [
 /// ```
 #[must_use]
 pub fn decode(bytes: &[u8], charset: &str) -> String {
-    // `decode_without_bom_handling` keeps the declared label authoritative and
-    // leaves a BOM in the text (see the module note on round-tripping).
-    let (text, _had_errors) = resolve(charset).decode_without_bom_handling(bytes);
+    // `decode_without_bom_handling` leaves a BOM in the text (see the module
+    // note on round-tripping).
+    let (text, _had_errors) = resolve(charset, bytes).decode_without_bom_handling(bytes);
     text.into_owned()
 }
 
 /// Resolves a charset label to its encoding, falling back to UTF-8.
-fn resolve(charset: &str) -> &'static Encoding {
+fn resolve(charset: &str, bytes: &[u8]) -> &'static Encoding {
     let label = normalise(charset);
-    if let Some(encoding) = Encoding::for_label(label.as_bytes()) {
-        return encoding;
+    let encoding = match Encoding::for_label(label.as_bytes()) {
+        Some(encoding) => encoding,
+        None => NON_STANDARD_LABELS
+            .iter()
+            .find(|(alias, _)| *alias == label)
+            .map_or(UTF_8, |(_, encoding)| *encoding),
+    };
+    if matches!(label.as_str(), "utf-16" | "utf16") {
+        return utf16_with_bom_or_default(bytes);
     }
-    NON_STANDARD_LABELS
-        .iter()
-        .find(|(alias, _)| *alias == label)
-        .map_or(UTF_8, |(_, encoding)| encoding)
+    encoding
+}
+
+/// Selects UTF-16 byte order for a bare `utf-16` label.
+fn utf16_with_bom_or_default(bytes: &[u8]) -> &'static Encoding {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        UTF_16LE
+    } else {
+        UTF_16BE
+    }
 }
 
 /// Canonicalises a charset label: trims, drops quotes, lowercases.
@@ -119,8 +132,45 @@ mod tests {
         assert_eq!(decode(&be, "utf-16be"), text);
         // Surrogate pairs are joined, not replaced one half at a time.
         let emoji = "🚀";
-        let units: Vec<u8> = emoji.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let units: Vec<u8> = emoji.encode_utf16().flat_map(u16::to_be_bytes).collect();
         assert_eq!(decode(&units, "utf-16"), emoji);
+    }
+
+    #[test]
+    fn bare_utf16_obeys_bom_and_defaults_to_big_endian() {
+        let text = "Grüße";
+        let mut be = Vec::new();
+        let mut le = Vec::new();
+        for unit in text.encode_utf16() {
+            be.extend_from_slice(&unit.to_be_bytes());
+            le.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        assert_eq!(decode(&be, "utf-16"), text);
+        assert_eq!(decode(&be, "utf16"), text);
+
+        for (bom, units, label) in [
+            ([0xFE, 0xFF], be.as_slice(), "utf-16"),
+            ([0xFF, 0xFE], le.as_slice(), "utf-16"),
+            ([0xFF, 0xFE], le.as_slice(), "utf16"),
+        ] {
+            let mut bytes = bom.to_vec();
+            bytes.extend_from_slice(units);
+            assert_eq!(decode(&bytes, label), format!("\u{feff}{text}"));
+        }
+
+        // The BOM is only the byte-order signal for bare labels; explicit
+        // labels keep their fixed byte order and preserve the BOM as text.
+        assert_eq!(decode(&[0xFE, 0xFF], "utf-16le"), "\u{fffe}");
+        assert_eq!(decode(&[0xFE, 0xFF], "utf-16be"), "\u{feff}");
+        assert_eq!(decode(&[0xFF, 0xFE], "utf-16le"), "\u{feff}");
+        assert_eq!(decode(&[0xFF, 0xFE], "utf-16be"), "\u{fffe}");
+
+        // Just-inside the two-byte BOM check and just outside it.
+        assert_eq!(decode(&[0xFE, 0xFF], "utf-16"), "\u{feff}");
+        assert_eq!(decode(&[0xFF, 0xFE], "utf-16"), "\u{feff}");
+        assert_eq!(decode(&[0xFE], "utf-16"), "\u{FFFD}");
+        assert_eq!(decode(&[], "utf-16"), "");
     }
 
     #[test]
@@ -147,9 +197,11 @@ mod tests {
 
     #[test]
     fn non_standard_labels_kept_from_before_are_still_understood() {
-        let units: Vec<u8> = "Grüße".encode_utf16().flat_map(u16::to_le_bytes).collect();
-        assert_eq!(decode(&units, "utf16"), "Grüße");
-        assert_eq!(decode(&units, "utf16le"), "Grüße");
+        let be: Vec<u8> = "Grüße".encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let le: Vec<u8> = "Grüße".encode_utf16().flat_map(u16::to_le_bytes).collect();
+        assert_eq!(decode(&be, "utf16"), "Grüße");
+        assert_eq!(decode(&le, "utf16le"), "Grüße");
+        assert_eq!(decode(&be, "utf16be"), "Grüße");
         assert_eq!(decode(&[0xA4], "latin9"), "€");
         assert_eq!(decode(&[0xA4], "latin-9"), "€");
     }

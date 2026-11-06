@@ -220,6 +220,9 @@ manifest disagree.
 
 ### Fixed
 - **Base64 decoding rejects non-zero trailing bits.** `transfer::decode_base64` still accepts missing padding for MIME leniency, but final-quantum variants that decode to the same bytes are now rejected as `Error::InvalidBase64` instead of being silently accepted. Closes #64.
+
+- **Bare UTF-16 now honors a leading BOM and defaults to big-endian without one.** `utf-16` and `utf16` select UTF-16BE for `FE FF`, UTF-16LE for `FF FE`, and big-endian when no BOM is present, while explicit `utf-16le` and `utf-16be` labels remain fixed and decoded text still preserves a leading U+FEFF. Closes #19.
+
 - **`Header::new` trims only ASCII SP/HTAB, and `Header` equality follows `is()`.**
   `Header::new` used Rust's Unicode-aware `trim`, so `"\u{a0}Rechnung"` lost its
   leading no-break space before it ever reached a caller. The constructor and
