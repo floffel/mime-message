@@ -24,6 +24,7 @@
 //! ```
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use html_escape::decode_html_entities;
 
 use crate::error::{Error, Result};
 use crate::parse::parse_media_type;
@@ -166,10 +167,12 @@ pub fn try_data_uri(content_type: &str, data: &[u8]) -> Result<String> {
 /// Rewrites every `cid:` reference in `html` through `resolve`.
 ///
 /// `resolve` receives the reference without the `cid:` scheme (surrounding
-/// angle brackets may still be present, as senders write both forms). Returning
-/// `None` leaves that reference exactly as it was. A malformed angle-bracket
-/// reference that is not closed before whitespace or another angle bracket is
-/// left unchanged.
+/// angle brackets may still be present, as senders write both forms). HTML
+/// character references inside URL positions are decoded before the resolver
+/// sees them. Returning `None` leaves that reference exactly as it was. Only
+/// URL positions are scanned: text, comments, script bodies and tag names are
+/// untouched. A malformed angle-bracket reference that is not closed before
+/// whitespace or another angle bracket is left unchanged.
 ///
 /// ```
 /// use mime_message::cid;
@@ -184,8 +187,11 @@ pub fn try_data_uri(content_type: &str, data: &[u8]) -> Result<String> {
 /// );
 /// ```
 ///
-/// Ordinary text that merely contains the letters is untouched: a reference has
-/// to start at a word boundary.
+/// Ordinary text that merely contains the letters is untouched. The rewriter
+/// handles URL-bearing HTML attributes, `srcset` candidates, and CSS `url(...)`
+/// functions in `style` attributes and `<style>` elements. It is still a small
+/// HTML scanner rather than a full tokenizer, so unusual non-HTML dialects and
+/// CSS escapes remain outside its scope.
 ///
 /// ```
 /// use mime_message::cid;
@@ -197,40 +203,495 @@ pub fn rewrite<F>(html: &str, mut resolve: F) -> String
 where
     F: FnMut(&str) -> Option<String>,
 {
-    const SCHEME: &[u8] = b"cid:";
-    let bytes = html.as_bytes();
+    let candidates = find_candidates(html);
     let mut out = String::with_capacity(html.len());
     let mut copied = 0usize;
-    let mut index = 0usize;
 
-    while index < bytes.len() {
-        let scheme_here = index + SCHEME.len() <= bytes.len()
-            && bytes[index..index + SCHEME.len()].eq_ignore_ascii_case(SCHEME)
-            && (index == 0 || !is_word_byte(bytes[index - 1]));
-        if !scheme_here {
-            index += 1;
+    for candidate in candidates {
+        if candidate.start < copied {
             continue;
         }
-        let start = index + SCHEME.len();
-        let end = reference_end(bytes, start);
-        let reference = &html[start..end];
-        if reference.is_empty() {
-            index = start;
-            continue;
-        }
-        match resolve(reference) {
-            Some(replacement) => {
-                out.push_str(&html[copied..index]);
-                out.push_str(&replacement);
-                copied = end;
-                index = end;
-            }
-            None => index = end,
+        if let Some(replacement) = resolve(&candidate.reference) {
+            out.push_str(&html[copied..candidate.start]);
+            out.push_str(&replacement);
+            copied = candidate.end;
         }
     }
 
+    if copied == 0 {
+        return html.to_string();
+    }
     out.push_str(&html[copied..]);
     out
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct Candidate {
+    start: usize,
+    end: usize,
+    reference: String,
+}
+
+/// Finds `cid:` references in HTML URL positions without rewriting other text.
+///
+/// This is deliberately a small scanner, not a full HTML tokenizer. It covers
+/// the places mail HTML puts image and link URLs: URL-bearing attributes,
+/// `srcset` candidates, CSS `url(...)` functions in `style` attributes, and
+/// CSS `url(...)` functions in `<style>` elements. It skips comments and raw
+/// script text, and decodes character references in attribute-backed values
+/// before handing a reference to the resolver. Other HTML syntax, including
+/// CSS escapes and unusual non-HTML dialects, remains outside this scanner.
+fn find_candidates(html: &str) -> Vec<Candidate> {
+    let mut candidates = Vec::new();
+    scan_document(html, &mut candidates);
+    candidates
+}
+
+fn scan_document(html: &str, candidates: &mut Vec<Candidate>) {
+    let bytes = html.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'<' {
+            index += 1;
+            continue;
+        }
+
+        if starts_with_ignore_ascii_case(html, index, "<!--") {
+            index = skip_comment(html, index);
+            continue;
+        }
+        if starts_with_ignore_ascii_case(html, index, "<!") || bytes.get(index + 1) == Some(&b'?') {
+            index = skip_until_gt(html, index);
+            continue;
+        }
+        if starts_with_ignore_ascii_case(html, index, "</") || !is_tag_start(bytes, index) {
+            index = skip_until_gt(html, index);
+            continue;
+        }
+
+        let Some(tag) = parse_start_tag(html, index, candidates) else {
+            index += 1;
+            continue;
+        };
+
+        if tag.name.eq_ignore_ascii_case("style") {
+            let content_start = tag.end;
+            let content_end = raw_text_end(html, content_start, "style");
+            scan_css_range(html, content_start, content_end, false, candidates);
+            index = content_end;
+        } else if tag.name.eq_ignore_ascii_case("script") {
+            index = raw_text_end(html, tag.end, "script");
+        } else {
+            index = tag.end;
+        }
+    }
+}
+
+struct StartTag<'a> {
+    name: &'a str,
+    end: usize,
+}
+
+fn parse_start_tag<'a>(
+    html: &'a str,
+    start: usize,
+    candidates: &mut Vec<Candidate>,
+) -> Option<StartTag<'a>> {
+    let bytes = html.as_bytes();
+    let mut index = start + 1;
+    let name_start = index;
+
+    while index < bytes.len() && is_tag_name_byte(bytes[index]) {
+        index += 1;
+    }
+    if index == name_start {
+        return None;
+    }
+    let name = &html[name_start..index];
+
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b'>') {
+            return Some(StartTag {
+                name,
+                end: index + 1,
+            });
+        }
+        if bytes.get(index) == Some(&b'/') {
+            index += 1;
+            if bytes.get(index) == Some(&b'>') {
+                return Some(StartTag {
+                    name,
+                    end: index + 1,
+                });
+            }
+            continue;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let attr_start = index;
+        while index < bytes.len() && !is_attribute_name_end(bytes[index]) {
+            index += 1;
+        }
+        if index == attr_start {
+            index += 1;
+            continue;
+        }
+        let attr_name = &html[attr_start..index];
+
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) != Some(&b'=') {
+            continue;
+        }
+        index += 1;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+
+        let (value_start, value_end) = if let Some(&quote @ (b'"' | b'\'')) = bytes.get(index) {
+            index += 1;
+            let value_start = index;
+            while index < bytes.len() && bytes[index] != quote {
+                index += 1;
+            }
+            // An unterminated quoted value would otherwise run to EOF and
+            // swallow every later tag. Abandon this tag as malformed instead.
+            if bytes.get(index) != Some(&quote) {
+                return None;
+            }
+            let value_end = index;
+            index += 1;
+            (value_start, value_end)
+        } else {
+            let value_start = index;
+            while index < bytes.len() && !bytes[index].is_ascii_whitespace() && bytes[index] != b'>'
+            {
+                index += 1;
+            }
+            (value_start, index)
+        };
+
+        if is_url_attribute(attr_name) {
+            scan_url_value(html, value_start, value_end, true, candidates);
+        } else if is_srcset_attribute(attr_name) {
+            scan_srcset_value(html, value_start, value_end, true, candidates);
+        } else if is_style_attribute(attr_name) {
+            scan_css_range(html, value_start, value_end, true, candidates);
+        }
+    }
+
+    Some(StartTag {
+        name,
+        end: bytes.len(),
+    })
+}
+
+fn is_url_attribute(name: &str) -> bool {
+    [
+        "action",
+        "background",
+        "cite",
+        "classid",
+        "codebase",
+        "data",
+        "formaction",
+        "href",
+        "icon",
+        "longdesc",
+        "manifest",
+        "poster",
+        "profile",
+        "src",
+        "usemap",
+        "xlink:href",
+    ]
+    .iter()
+    .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+fn is_srcset_attribute(name: &str) -> bool {
+    name.eq_ignore_ascii_case("srcset") || name.eq_ignore_ascii_case("imagesrcset")
+}
+
+fn is_style_attribute(name: &str) -> bool {
+    name.eq_ignore_ascii_case("style")
+}
+
+fn scan_url_value(
+    html: &str,
+    start: usize,
+    end: usize,
+    decode_entities: bool,
+    candidates: &mut Vec<Candidate>,
+) {
+    let bytes = html.as_bytes();
+    let mut start = start;
+    while start < end && bytes[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    add_candidate_from_raw(html, start, end, decode_entities, candidates);
+}
+
+fn scan_srcset_value(
+    html: &str,
+    start: usize,
+    end: usize,
+    decode_entities: bool,
+    candidates: &mut Vec<Candidate>,
+) {
+    let bytes = html.as_bytes();
+    let mut index = start;
+
+    while index < end {
+        while index < end && (bytes[index].is_ascii_whitespace() || bytes[index] == b',') {
+            index += 1;
+        }
+        if index >= end {
+            break;
+        }
+
+        let url_start = index;
+        while index < end
+            && !bytes[index].is_ascii_whitespace()
+            && bytes[index] != b','
+            && bytes[index] != b'"'
+            && bytes[index] != b'\''
+            && bytes[index] != b'<'
+            && bytes[index] != b'>'
+        {
+            index += 1;
+        }
+        add_candidate_from_raw(html, url_start, index, decode_entities, candidates);
+
+        while index < end && bytes[index] != b',' {
+            index += 1;
+        }
+        if index < end {
+            index += 1;
+        }
+    }
+}
+
+fn scan_css_range(
+    html: &str,
+    start: usize,
+    end: usize,
+    decode_entities: bool,
+    candidates: &mut Vec<Candidate>,
+) {
+    let bytes = html.as_bytes();
+    let mut index = start;
+
+    while index < end {
+        if starts_with_ignore_ascii_case(html, index, "/*") {
+            index = css_comment_end(html, index, end);
+            continue;
+        }
+        if matches!(bytes.get(index), Some(b'"' | b'\'')) {
+            index = css_string_end(html, index, end);
+            continue;
+        }
+        if is_css_url_start(html, index, end) {
+            index = parse_css_url(html, index, end, decode_entities, candidates);
+            continue;
+        }
+        index += 1;
+    }
+}
+
+fn is_css_url_start(html: &str, index: usize, end: usize) -> bool {
+    let bytes = html.as_bytes();
+    if index + 3 > end || !bytes[index..index + 3].eq_ignore_ascii_case(b"url") {
+        return false;
+    }
+    if index > 0 && is_css_ident_byte(bytes[index - 1]) {
+        return false;
+    }
+
+    let mut cursor = index + 3;
+    while cursor < end && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    bytes.get(cursor) == Some(&b'(')
+}
+
+fn parse_css_url(
+    html: &str,
+    start: usize,
+    end: usize,
+    decode_entities: bool,
+    candidates: &mut Vec<Candidate>,
+) -> usize {
+    let bytes = html.as_bytes();
+    let mut index = start + 3;
+    while index < end && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if bytes.get(index) != Some(&b'(') {
+        return index + 1;
+    }
+    index += 1;
+    while index < end && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+
+    if let Some(&quote @ (b'"' | b'\'')) =
+        bytes.get(index).filter(|byte| matches!(byte, b'"' | b'\''))
+    {
+        index += 1;
+        let value_start = index;
+        while index < end && bytes[index] != quote {
+            index += 1;
+        }
+        let value_end = index;
+        add_candidate_from_raw(html, value_start, value_end, decode_entities, candidates);
+        if bytes.get(index) == Some(&quote) {
+            index += 1;
+        }
+        while index < end && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if bytes.get(index) == Some(&b')') {
+            index += 1;
+        }
+        return index;
+    }
+
+    let value_start = index;
+    while index < end
+        && !bytes[index].is_ascii_whitespace()
+        && !matches!(bytes[index], b')' | b'"' | b'\'' | b'(')
+    {
+        index += 1;
+    }
+    add_candidate_from_raw(html, value_start, index, decode_entities, candidates);
+    while index < end && bytes[index].is_ascii_whitespace() {
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b')') {
+        index += 1;
+    }
+    index
+}
+
+fn add_candidate_from_raw(
+    html: &str,
+    start: usize,
+    end: usize,
+    decode_entities: bool,
+    candidates: &mut Vec<Candidate>,
+) {
+    let bytes = html.as_bytes();
+    if start + 4 > end || !bytes[start..start + 4].eq_ignore_ascii_case(b"cid:") {
+        return;
+    }
+
+    let reference_start = start + 4;
+    let reference_end = reference_end(bytes, reference_start, end);
+    if reference_start == reference_end {
+        return;
+    }
+
+    let raw_reference = &html[reference_start..reference_end];
+    let reference = if decode_entities {
+        decode_html_entities(raw_reference).into_owned()
+    } else {
+        raw_reference.to_string()
+    };
+    if reference.is_empty() {
+        return;
+    }
+
+    candidates.push(Candidate {
+        start,
+        end: reference_end,
+        reference,
+    });
+}
+
+fn skip_comment(html: &str, start: usize) -> usize {
+    html[start + "<!--".len()..]
+        .find("-->")
+        .map_or(html.len(), |offset| {
+            start + "<!--".len() + offset + "-->".len()
+        })
+}
+
+fn skip_until_gt(html: &str, start: usize) -> usize {
+    html[start..]
+        .find('>')
+        .map_or(html.len(), |offset| start + offset + 1)
+}
+
+fn raw_text_end(html: &str, start: usize, tag_name: &str) -> usize {
+    let bytes = html.as_bytes();
+    let mut index = start;
+    while index + tag_name.len() + 2 <= bytes.len() {
+        if bytes[index] == b'<'
+            && bytes.get(index + 1) == Some(&b'/')
+            && html[index + 2..]
+                .get(..tag_name.len())
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(tag_name))
+        {
+            let after = index + 2 + tag_name.len();
+            if after == bytes.len() || bytes[after].is_ascii_whitespace() || bytes[after] == b'>' {
+                return index;
+            }
+        }
+        index += 1;
+    }
+    html.len()
+}
+
+fn css_comment_end(html: &str, start: usize, end: usize) -> usize {
+    html[start + 2..end]
+        .find("*/")
+        .map_or(end, |offset| start + 2 + offset + 2)
+}
+
+fn css_string_end(html: &str, start: usize, end: usize) -> usize {
+    let bytes = html.as_bytes();
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < end {
+        if bytes[index] == b'\\' {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == quote {
+            return index + 1;
+        }
+        index += 1;
+    }
+    end
+}
+
+fn starts_with_ignore_ascii_case(html: &str, start: usize, needle: &str) -> bool {
+    html.get(start..start + needle.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
+}
+
+fn is_tag_start(bytes: &[u8], index: usize) -> bool {
+    bytes.get(index + 1).is_some_and(u8::is_ascii_alphabetic)
+}
+
+fn is_tag_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'-')
+}
+
+fn is_attribute_name_end(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || matches!(byte, b'=' | b'/' | b'>')
+}
+
+fn is_css_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
 
 /// Percent-encodes a data URI parameter value.
@@ -329,30 +790,39 @@ fn invalid_content_type(content_type: &str) -> Error {
 
 const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
-/// Bytes that make a preceding `cid:` part of a longer word.
-fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte >= 0x80
-}
-
 /// End index of the reference that starts right after `cid:`.
-fn reference_end(bytes: &[u8], start: usize) -> usize {
+///
+/// `limit` is the end of the URL position holding the reference. An
+/// angle-bracket reference must close with `>` before `limit`; an unterminated
+/// one is left unchanged (returns `start`) so a malformed prefix never consumes
+/// the surrounding markup.
+fn reference_end(bytes: &[u8], start: usize, limit: usize) -> usize {
     if bytes.get(start) == Some(&b'<') {
-        return match angle_reference_end(bytes, start) {
+        return match angle_reference_end(bytes, start, limit) {
             Some(end) => end,
             None => start,
         };
     }
     let mut end = start;
-    while end < bytes.len() && !is_reference_delimiter(bytes[end]) {
+    while end < limit {
+        if bytes[end] == b'&' {
+            if let Some(entity_end) = html_entity_end(bytes, end, limit) {
+                end = entity_end;
+                continue;
+            }
+        }
+        if !is_url_reference_byte(bytes[end]) || matches!(bytes[end], b'"' | b'\'' | b'<' | b'>') {
+            break;
+        }
         end += 1;
     }
     end
 }
 
-/// End index of a well-formed angle-bracket reference, if there is one.
-fn angle_reference_end(bytes: &[u8], start: usize) -> Option<usize> {
+/// End index of a well-formed angle-bracket reference within `limit`, if any.
+fn angle_reference_end(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
     let mut end = start + 1;
-    while end < bytes.len() {
+    while end < limit {
         let byte = bytes[end];
         if byte == b'>' {
             return Some(end + 1);
@@ -365,11 +835,66 @@ fn angle_reference_end(bytes: &[u8], start: usize) -> Option<usize> {
     None
 }
 
-fn is_reference_delimiter(byte: u8) -> bool {
-    matches!(
-        byte,
-        b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'(' | b')' | b'<' | b'>' | b',' | b';'
-    )
+fn html_entity_end(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
+    let mut index = start + 1;
+    if bytes.get(index) == Some(&b'#') {
+        index += 1;
+        let digits_start = index;
+        if bytes
+            .get(index)
+            .is_some_and(|byte| matches!(byte, b'x' | b'X'))
+        {
+            index += 1;
+            let hex_start = index;
+            while index < limit && bytes[index].is_ascii_hexdigit() {
+                index += 1;
+            }
+            if index == hex_start {
+                return None;
+            }
+        } else {
+            while index < limit && bytes[index].is_ascii_digit() {
+                index += 1;
+            }
+            if index == digits_start {
+                return None;
+            }
+        }
+    } else {
+        let name_start = index;
+        while index < limit && bytes[index].is_ascii_alphanumeric() {
+            index += 1;
+        }
+        if index == name_start {
+            return None;
+        }
+    }
+    (bytes.get(index) == Some(&b';')).then_some(index + 1)
+}
+
+fn is_url_reference_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric()
+        || matches!(
+            byte,
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'/'
+                | b':'
+                | b'='
+                | b'?'
+                | b'@'
+                | b'_'
+                | b'~'
+                | b'['
+                | b']'
+        )
+        || byte >= 0x80
 }
 
 #[cfg(test)]
@@ -379,7 +904,7 @@ mod tests {
     use std::fmt::Write as _;
 
     fn cid_reference_text() -> impl Strategy<Value = String> {
-        proptest::string::string_regex("[^\\s<>\"'(),;]{1,20}")
+        proptest::string::string_regex("[A-Za-z0-9_.@+-]{1,20}")
             .expect("CID reference regex is valid")
     }
 
@@ -420,32 +945,176 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_only_touches_url_positions() {
+        let html = concat!(
+            "<!-- <img src=\"cid:commented\"> -->",
+            "<script>const x = \"cid:scripted\";</script>",
+            "<p>cid:text</p>",
+            "<a href=\"https://example.test/?next=cid:not-scheme\">x</a>",
+            "<img data-cid=\"cid:not-url-attr\" src=\"cid:image\">",
+            "<div data-cid=\"cid:not-url-attr\">x</div>",
+        );
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            concat!(
+                "<!-- <img src=\"cid:commented\"> -->",
+                "<script>const x = \"cid:scripted\";</script>",
+                "<p>cid:text</p>",
+                "<a href=\"https://example.test/?next=cid:not-scheme\">x</a>",
+                "<img data-cid=\"cid:not-url-attr\" src=\"[image]\">",
+                "<div data-cid=\"cid:not-url-attr\">x</div>",
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_decodes_character_references_in_urls() {
+        let html = "<img src=\"cid:logo&#64;example.com\">";
+        assert_eq!(
+            rewrite(html, |reference| Some(format!("[{reference}]"))),
+            "<img src=\"[logo@example.com]\">"
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_srcset_url_candidates() {
+        let html = "<img srcset=\"cid:a 1x, cid:b 2x, https://example.test/cid:c 3x\">";
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            "<img srcset=\"[a] 1x, [b] 2x, https://example.test/cid:c 3x\">"
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_style_attribute_css_urls() {
+        let html = "<div style=\"background:url('cid:a'); mask:url(cid:b)\"></div>";
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            "<div style=\"background:url('[a]'); mask:url([b])\"></div>"
+        );
+    }
+
+    #[test]
+    fn rewrite_does_not_split_unicode_punctuation_boundaries() {
+        let html = "<img src=\"cid:a—b\"><img src=\"cid:c d\">";
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(rewritten, "<img src=\"[a—b]\"><img src=\"[c] d\">");
+    }
+
+    #[test]
+    fn rewrite_handles_self_closing_tags_and_boolean_attributes() {
+        let html = "<img hidden src=\"cid:image\"/><br data-x>cid:text";
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            "<img hidden src=\"[image]\"/><br data-x>cid:text"
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_style_element_comments_and_resolved_strings() {
+        let html = concat!(
+            "<style>/* url(cid:commented) */",
+            "a{background:url( cid:spaced )}",
+            "b{background:URL(\"cid:quoted\")}",
+            "c{background:url()}",
+            "</style>"
+        );
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            concat!(
+                "<style>/* url(cid:commented) */",
+                "a{background:url( [spaced] )}",
+                "b{background:URL(\"[quoted]\")}",
+                "c{background:url()}",
+                "</style>"
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_handles_entity_edge_cases_in_attributes() {
+        let html = concat!(
+            "<img src=\"cid:a&#x40;b\">",
+            "<img src=\"cid:a&amp;b\">",
+            "<img src=\"cid:a&bogus;b\">",
+            "<img src=\"cid:a&#;b\">",
+            "<img src=\"cid:\">",
+        );
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            concat!(
+                "<img src=\"[a@b]\">",
+                "<img src=\"[a&b]\">",
+                "<img src=\"[a&bogus;b]\">",
+                "<img src=\"[a&#];b\">",
+                "<img src=\"cid:\">",
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_skips_bogus_and_unclosed_markup() {
+        let html = concat!(
+            "<?pi cid:processing?>",
+            "<!DOCTYPE html>",
+            "< not-a-tag cid:nope>",
+            "</ broken cid:nope>",
+            "<img src=\"cid:ok\"",
+        );
+        let rewritten = rewrite(html, |reference| Some(format!("[{reference}]")));
+        assert_eq!(
+            rewritten,
+            concat!(
+                "<?pi cid:processing?>",
+                "<!DOCTYPE html>",
+                "< not-a-tag cid:nope>",
+                "</ broken cid:nope>",
+                "<img src=\"[ok]\"",
+            )
+        );
+    }
+
+    #[test]
     fn rewrite_leaves_unresolved_and_malformed_references_alone() {
         assert_eq!(rewrite("cid:", |_| Some("x".into())), "cid:");
         assert_eq!(rewrite("cid: <", |_| Some("x".into())), "cid: <");
         assert_eq!(rewrite("xcid:a", |r| Some(format!("/{r}"))), "xcid:a");
-        // A scheme-looking prefix is a boundary: `acid:cid:a` has a real `cid:`.
-        assert_eq!(rewrite("acid:cid:a", |r| Some(format!("/{r}"))), "acid:/a");
+        assert_eq!(
+            rewrite("acid:cid:a", |r| Some(format!("/{r}"))),
+            "acid:cid:a"
+        );
         assert_eq!(rewrite("", |_| Some("x".into())), "");
     }
 
     #[test]
     fn rewrite_accepts_only_well_formed_angle_references() {
-        assert_eq!(rewrite("cid:<abc>", |r| Some(format!("/{r}"))), "/<abc>");
-        assert_eq!(rewrite("cid:<abc", |r| Some(format!("/{r}"))), "cid:<abc");
         assert_eq!(
-            rewrite("cid:<abc def>", |r| Some(format!("/{r}"))),
-            "cid:<abc def>"
+            rewrite("<img src=\"cid:<abc>\">", |r| Some(format!("/{r}"))),
+            "<img src=\"/<abc>\">"
         );
         assert_eq!(
-            rewrite("cid:<abc<def>", |r| Some(format!("/{r}"))),
-            "cid:<abc<def>"
+            rewrite("<img src=\"cid:<abc\">", |r| Some(format!("/{r}"))),
+            "<img src=\"cid:<abc\">"
+        );
+        assert_eq!(
+            rewrite("<img src=\"cid:<abc def>\">", |r| Some(format!("/{r}"))),
+            "<img src=\"cid:<abc def>\">"
+        );
+        assert_eq!(
+            rewrite("<img src=\"cid:<abc<def>\">", |r| Some(format!("/{r}"))),
+            "<img src=\"cid:<abc<def>\">"
         );
     }
 
     #[test]
     fn rewrite_preserves_valid_html_after_a_malformed_angle_reference() {
-        let html = "<p>before cid:<broken <strong>after</strong></p>";
+        let html = "<img src=\"cid:<broken\"><strong>after</strong>";
         assert_eq!(
             rewrite(html, |reference| Some(format!("[{reference}]"))),
             html
@@ -588,35 +1257,23 @@ mod tests {
             }
         }
 
-        /// Echoing every reference back only drops the consumed `cid:` schemes,
-        /// so the rewrite can never grow the text and never invents a byte:
-        /// the output is a subsequence of the input, and every reference handed
-        /// to the resolver is a real slice of that input.
         #[test]
-        fn rewrite_echo_only_removes_the_scheme(html in any::<String>()) {
+        fn rewrite_echoing_references_is_total(html in any::<String>()) {
             let mut seen = Vec::new();
             let output = rewrite(&html, |reference| {
                 seen.push(reference.to_string());
                 Some(reference.to_string())
             });
 
-            prop_assert!(output.len() <= html.len(), "{output:?} grew from {html:?}");
-            let mut haystack = html.bytes();
-            for byte in output.bytes() {
-                prop_assert!(
-                    haystack.any(|candidate| candidate == byte),
-                    "byte 0x{byte:02x} of {output:?} is not in order in {html:?}"
-                );
-            }
             for reference in &seen {
                 prop_assert!(!reference.is_empty(), "empty callback reference");
-                prop_assert!(html.contains(reference), "{reference:?} is not in {html:?}");
             }
+            prop_assert!(output.is_empty() == html.is_empty());
         }
 
         #[test]
         fn rewrite_ignores_empty_and_whitespace_references(gap in "[ \t\r\n]{1,8}") {
-            let html = format!("before cid:{gap}after");
+            let html = format!("<img src=\"cid:{gap}\">");
             let calls = std::cell::Cell::new(0usize);
             let output = rewrite(&html, |_| {
                 calls.set(calls.get() + 1);
@@ -628,8 +1285,11 @@ mod tests {
         }
 
         #[test]
-        fn rewrite_ignores_unterminated_angle_references(tail in "[^>cC]{0,20}") {
-            let html = format!("before cid:<{tail}");
+        fn rewrite_ignores_unterminated_angle_references(tail in "[^>\"']{0,20}") {
+            // The URL position ends with the closing quote, so an angle-bracket
+            // reference that never closes before it is left unchanged and never
+            // hands the tail to the resolver.
+            let html = format!("<img src=\"cid:<{tail}\">");
             let calls = std::cell::Cell::new(0usize);
             let output = rewrite(&html, |_| {
                 calls.set(calls.get() + 1);
@@ -651,22 +1311,20 @@ mod tests {
             for case in cases {
                 match case {
                     RewriteCase::Literal(text) => {
-                        html.push_str(&text);
-                        expected.push_str(&text);
+                        write!(html, "<span>{text}</span>").expect("writing to a String cannot fail");
+                        write!(expected, "<span>{text}</span>")
+                            .expect("writing to a String cannot fail");
                     }
                     RewriteCase::Reference { text, unresolved } => {
-                        html.push(' ');
-                        html.push_str("cid:");
-                        html.push_str(&text);
-                        html.push(' ');
-                        expected.push(' ');
-                        expected.push_str(if unresolved { "cid:" } else { "" });
+                        write!(html, "<img src=\"cid:{text}\">")
+                            .expect("writing to a String cannot fail");
                         if unresolved {
-                            expected.push_str(&text);
+                            write!(expected, "<img src=\"cid:{text}\">")
+                                .expect("writing to a String cannot fail");
                         } else {
-                            write!(expected, "[{text}]").expect("writing to a String cannot fail");
+                            write!(expected, "<img src=\"[{text}]\">")
+                                .expect("writing to a String cannot fail");
                         }
-                        expected.push(' ');
                         expected_references.push((text, unresolved));
                     }
                 }
