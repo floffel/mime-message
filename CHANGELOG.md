@@ -42,6 +42,7 @@ manifest disagree.
   drives `cid::rewrite` and `Message::rewrite_cid_references` over arbitrary UTF-8 with
   resolving and non-resolving closures, asserting totality, preservation of unresolved
   input, and that the rewrite never invents bytes. Closes #25.
+- **Property and fuzz coverage for the wire-facing header parser.** `Header::from_wire` now has generated invariant tests and a cargo-fuzz target drives the header-block path with default limits. Closes #43.
 
 - **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
   and `impl FromStr for Mailbox` route through the same address and display-name
