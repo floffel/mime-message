@@ -391,7 +391,7 @@ Documented rather than silently missing:
   relies on: the 78-character header line, the 998-octet body line with both
   sides of the boundary, the 75-character encoded-word that still decodes on its
   own, and quoted-printable lines within 76.
-- Line coverage: **96.25 %** (`cargo llvm-cov --all-features --summary-only`; the
+- Line coverage: **96.32 %** (`cargo llvm-cov --all-features --summary-only`; the
   `dkim` module itself 97.03 %). CI fails below 95 %.
 
 ### Fuzzing
