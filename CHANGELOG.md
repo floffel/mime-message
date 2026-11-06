@@ -220,6 +220,16 @@ manifest disagree.
   same field parsed with `from_wire`. Equality and hashing now use the field
   identity `is()` defines: ASCII-case-insensitive name plus unfolded value.
   Pinned by the header unit tests and `tests/headers.rs`.
+- **A malformed unrelated DKIM signature no longer hides a real verification
+  failure.** `dkim::verify` stored the first parse error and the first body or
+  signature mismatch in the same slot, so a prepended
+  `DKIM-Signature: garbage` turned a later tampered message into
+  `Error::InvalidSignature("malformed")` instead of reporting the tampering.
+  Malformed signatures are now fallback errors; a body or signature mismatch
+  from the matching signature wins, and both mismatch variants carry the
+  failing `d=`/`s=` pair for diagnostics. Pinned by
+  `a_malformed_signature_does_not_hide_a_matching_mismatch` and the RFC 8463
+  tamper assertions.
 - **`Attachment::with_content_id` rejects empty `Content-ID`s at construction.**
   The setter used to store `Some("")` for `""`, `"<>"` or `"cid:<>"` while the
   parser dropped empty IDs and the renderer rejected them later, so

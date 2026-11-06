@@ -279,13 +279,33 @@ pub enum Error {
     #[error("no DKIM-Signature uses the algorithm of this key")]
     NoMatchingSignature,
     /// The body hash in the signature does not match the body.
+    ///
+    /// The payload names the signature that failed: `domain` is its `d=`
+    /// value and `selector` is its `s=` value. A message can carry signatures
+    /// from several senders, so the tag values are how a caller points at the
+    /// DNS record it needs to inspect.
     #[cfg(feature = "dkim")]
-    #[error("DKIM body hash mismatch: the body was modified")]
-    BodyHashMismatch,
+    #[error("DKIM body hash mismatch for d={domain} s={selector}: the body was modified")]
+    BodyHashMismatch {
+        /// The `d=` tag of the signature that failed.
+        domain: String,
+        /// The `s=` tag of the signature that failed.
+        selector: String,
+    },
     /// The signature does not verify against the header hash.
+    ///
+    /// The payload names the signature that failed with the same `d=`/`s=`
+    /// tags as [`Error::BodyHashMismatch`].
     #[cfg(feature = "dkim")]
-    #[error("DKIM signature does not verify: a signed header was modified")]
-    SignatureMismatch,
+    #[error(
+        "DKIM signature does not verify for d={domain} s={selector}: a signed header was modified"
+    )]
+    SignatureMismatch {
+        /// The `d=` tag of the signature that failed.
+        domain: String,
+        /// The `s=` tag of the signature that failed.
+        selector: String,
+    },
 }
 
 /// Why a DKIM key was rejected — the payload of [`Error::InvalidKey`].

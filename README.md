@@ -262,9 +262,11 @@ disk: the same code, runnable and asserted, is the doctest on
 - Verification compares `bh=` in constant time (`subtle`), honours `l=`,
   selects header instances bottom-up per RFC 6376 §5.4.2, treats an over-signed
   name as the empty string, and uses Ed25519 `verify_strict` or RSA PKCS#1 v1.5.
-  It returns the first signature that verifies, otherwise the first failure:
-  `MissingSignature`, `NoMatchingSignature`, `BodyHashMismatch`,
-  `SignatureMismatch`, `InvalidSignature`.
+  It returns the first signature that verifies. Otherwise a body or signature
+  mismatch from the matching signature wins over parse errors from other
+  signatures, and the mismatch carries the failing `d=`/`s=` pair; remaining
+  failures are `MissingSignature`, `NoMatchingSignature`,
+  `BodyHashMismatch`, `SignatureMismatch`, `InvalidSignature`.
 - No DNS, no OCSP, no key cache, no clock. `Debug` on `SigningKey` prints the
   algorithm only.
 - Known dependency advisory: `rsa` 0.9 carries RUSTSEC-2023-0071 (the "Marvin"
