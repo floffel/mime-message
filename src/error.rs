@@ -231,7 +231,7 @@ pub enum Error {
     ///
     /// let error = SigningKey::from_pem("; p=AA==").unwrap_err();
     /// assert_eq!(error, Error::InvalidKey(KeyRejected::NotPem));
-    /// assert!(error.to_string().starts_with("invalid DKIM key: not a PEM block"));
+    /// assert!(error.to_string().starts_with("invalid DKIM key: not a complete PEM block"));
     /// // Nothing of the rejected input is echoed back.
     /// assert!(!format!("{error} {error:?}").contains("p=AA=="));
     /// ```
@@ -351,7 +351,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum KeyRejected {
-    /// The text contains no `-----BEGIN …-----` line.
+    /// The text is not one complete PEM block with matching BEGIN/END lines.
     NotPem,
     /// The PEM label is not one this crate reads (`RSA PRIVATE KEY`,
     /// `PRIVATE KEY`).
@@ -415,7 +415,7 @@ pub enum KeyRejected {
 impl std::fmt::Display for KeyRejected {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotPem => write!(formatter, "not a PEM block (no label line)"),
+            Self::NotPem => write!(formatter, "not a complete PEM block"),
             Self::UnsupportedPemLabel => write!(
                 formatter,
                 "unsupported PEM label (expected a PKCS#1 or PKCS#8 private key block)"

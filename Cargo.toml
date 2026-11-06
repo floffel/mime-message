@@ -21,6 +21,7 @@ thiserror = "2"
 
 # DKIM is optional: it pulls in RSA and Ed25519.
 ed25519-dalek = { version = "2.2", optional = true, default-features = false, features = ["std", "pkcs8", "pem"] }
+pem = { version = "4.0.0", optional = true }
 rsa = { version = "0.9", optional = true, default-features = false, features = ["std", "sha2", "pem"] }
 subtle = { version = "2.6", optional = true }
 
@@ -31,7 +32,7 @@ sha2 = "0.10"
 
 [features]
 default = []
-dkim = ["dep:ed25519-dalek", "dep:rsa", "dep:subtle"]
+dkim = ["dep:ed25519-dalek", "dep:pem", "dep:rsa", "dep:subtle"]
 
 # docs.rs builds every feature, so the `dkim` module is visible there.
 [package.metadata.docs.rs]

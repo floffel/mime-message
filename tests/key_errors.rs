@@ -143,15 +143,12 @@ fn the_label_match_stays_case_sensitive() {
 }
 
 #[test]
-fn a_pem_block_without_an_end_line_is_a_plain_invalid_key() {
-    // The label is read from the BEGIN line alone, so a truncated file still names a
-    // stage instead of failing with something opaque.
+fn a_pem_block_without_an_end_line_is_not_a_pem_block() {
+    // The PEM crate parses a complete block and exposes the tag; a BEGIN line
+    // without its matching END line never reaches a PKCS decoder.
     let truncated = "-----BEGIN RSA PRIVATE KEY-----\nMAA=\n";
     let error = SigningKey::from_pem(truncated).unwrap_err();
-    assert!(
-        matches!(cause_of(&error), KeyParseError::Pkcs1(_)),
-        "a truncated block is a PKCS#1 decode failure, got {error:?}"
-    );
+    assert_eq!(error, Error::InvalidKey(KeyRejected::NotPem));
 }
 
 #[test]
