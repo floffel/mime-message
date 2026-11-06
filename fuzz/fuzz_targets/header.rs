@@ -13,10 +13,11 @@ use mime_message::{parse, Header, Message};
 fn check_header(header: &Header) {
     let value = header.value();
     assert!(
-        !value
-            .bytes()
-            .any(|byte| matches!(byte, b'\r' | b'\n' | 0x7f)),
-        "accepted value contains CR, LF or DEL: {value:?}"
+        !value.chars().any(|ch| {
+            matches!(ch, '\r' | '\n' | '\0' | '\u{85}' | '\u{2028}' | '\u{2029}')
+                || (ch.is_control() && ch != '\t')
+        }),
+        "accepted value contains a forbidden line separator or control: {value:?}"
     );
     assert_eq!(
         value.trim_matches(|ch| ch == ' ' || ch == '\t'),

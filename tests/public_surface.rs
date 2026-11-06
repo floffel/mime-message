@@ -241,6 +241,39 @@ fn crate_level_lints_stay_in_place() {
     }
 }
 
+#[test]
+fn release_status_names_the_published_line_and_the_next_breaking_release() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml is readable");
+    let readme = fs::read_to_string(root.join("README.md")).expect("README.md is readable");
+    let changelog =
+        fs::read_to_string(root.join("CHANGELOG.md")).expect("CHANGELOG.md is readable");
+    let readme_flat = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert!(
+        manifest.contains("version = \"0.3.4\""),
+        "the release-status guard assumes the current manifest version; update this test with the release"
+    );
+    assert!(
+        readme.contains("## Features") && readme.contains("default = []"),
+        "README must document the empty default feature set"
+    );
+    assert!(
+        readme_flat.contains("next release is **0.4.0**"),
+        "README must state that the next release is 0.4.0"
+    );
+    assert!(
+        changelog.contains("`0.3.4` is the published release"),
+        "CHANGELOG must state which release is published"
+    );
+    for stale in ["Tag v0.1.0", "CARGO_REGISTRY_TOKEN"] {
+        assert!(
+            !readme.contains(stale) && !changelog.contains(stale),
+            "release documentation contains stale checklist text `{stale}`"
+        );
+    }
+}
+
 /// The README is documentation that runs, not prose next to the code.
 ///
 /// `lib.rs` pulls `README.md` into the crate documentation under `cfg(doctest)`,

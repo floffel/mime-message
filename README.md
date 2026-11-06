@@ -4,6 +4,26 @@ Build **and parse** RFC 5322 / MIME email messages — no SMTP, no sockets, no
 async, no `unsafe`, no network access. Optional DKIM signing and verification
 behind a feature flag.
 
+## Features
+
+The default feature set is empty: `default = []`. Parsing, rendering, MIME
+structure, charsets, transfer encodings, `cid:` rewriting and streaming need
+neither optional crates nor a network client. `dkim` is the only feature; it
+adds RSA/Ed25519 signing and verification and their optional dependencies.
+
+```toml
+# Core parser and renderer only.
+mime-message = "0.3"
+
+# Add DKIM.
+mime-message = { version = "0.3", features = ["dkim"] }
+```
+
+There is no HTTP, socket or async runtime dependency in either configuration.
+`tests/feature_matrix.rs` pins both the empty default set and the dependency
+graph, and CI runs the test suite with `--all-features` and with
+`--no-default-features`.
+
 ```rust
 use mime_message::{Attachment, Message};
 
@@ -358,7 +378,9 @@ Documented rather than silently missing:
 - Property tests (`proptest`): arbitrary `Message` → render → parse round-trip
   (preserved headers included), render→parse→render stability, header folding
   round-trip, RFC 2047 round-trip, `parse` never panics on arbitrary text *or*
-  arbitrary bytes, base64/quoted-printable output bounded by input, base64 error
+  arbitrary bytes, CRLF-injection, unbalanced-comment and broken encoded-word
+  strategies that also assert no line separator reaches a decoded modelled
+  field, base64/quoted-printable output bounded by input, base64 error
   locations that stay inside the input it was given, charset
   decoding total, and — with `dkim` — the body hash against an independent
   canonicalizer for arbitrary bodies, sign→verify for arbitrary bodies, and
@@ -369,8 +391,8 @@ Documented rather than silently missing:
   relies on: the 78-character header line, the 998-octet body line with both
   sides of the boundary, the 75-character encoded-word that still decodes on its
   own, and quoted-printable lines within 76.
-- Line coverage: **97.2 %** (`cargo llvm-cov --all-features --summary-only`; the
-  `dkim` module itself 97.6 %). CI fails below 95 %.
+- Line coverage: **96.32 %** (`cargo llvm-cov --all-features --summary-only`; the
+  `dkim` module itself 97.03 %). CI fails below 95 %.
 
 ### Fuzzing
 
@@ -391,6 +413,10 @@ quoted-printable), `truncated.eml`, `headers.eml` (folded, duplicated, empty and
 `dkim.eml` (RFC 8463 example). 171k executions in a 45-second run, no crashes.
 
 ## Versioning
+
+`0.3.4` is the published release. No `v0.1.0` was ever cut; the next release is
+**0.4.0** because the API review added `#[non_exhaustive]` to payload types,
+which breaks downstream struct literals.
 
 `0.y.z`: a **minor** bump may break (Cargo's pre-1.0 rule), a **patch** bump
 never does. The types that can grow are `#[non_exhaustive]`: `Error`,
