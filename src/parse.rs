@@ -102,6 +102,38 @@ pub struct Limits {
     pub max_header_line_bytes: usize,
     /// Maximum number of header fields in one block.
     pub max_headers: usize,
+    /// Maximum total size of the complete input message, in bytes.
+    ///
+    /// This is the crate's guard against memory exhaustion. [`parse_with_limits`]
+    /// compares `raw.len()` against this limit before it allocates parser-owned
+    /// buffers or copies any header or body; a larger input returns
+    /// [`Error::InputTooLarge`](crate::Error::InputTooLarge) with this limit and
+    /// the actual size.
+    ///
+    /// Parsing is not streaming: the caller already holds the source `&str`, and
+    /// the parser can create decoded body copies and a part tree while it works.
+    /// Budget for a peak around 3× the input size, plus whatever the caller keeps
+    /// alive. The crate does no I/O, so the caller owns the outer size bound and
+    /// must read at most this many bytes in the first place.
+    ///
+    /// ```
+    /// use mime_message::{parse_with_limits, Error, Limits};
+    ///
+    /// let raw = "From: a@example.com\r\n\r\nhi";
+    /// let mut limits = Limits::default();
+    /// limits.max_bytes = raw.len();
+    /// assert!(parse_with_limits(raw, &limits).is_ok());
+    ///
+    /// limits.max_bytes -= 1;
+    /// assert_eq!(
+    ///     parse_with_limits(raw, &limits).unwrap_err(),
+    ///     Error::InputTooLarge {
+    ///         limit: raw.len() - 1,
+    ///         size: raw.len(),
+    ///     }
+    /// );
+    /// ```
+    pub max_bytes: usize,
     /// Maximum size of one undecoded *and* decoded body, in bytes.
     pub max_body_bytes: usize,
 }
@@ -114,6 +146,7 @@ impl Default for Limits {
             max_header_bytes: 64 * 1024,
             max_header_line_bytes: MAX_HEADER_LINE,
             max_headers: 1000,
+            max_bytes: 32 * 1024 * 1024,
             max_body_bytes: 8 * 1024 * 1024,
         }
     }
@@ -147,6 +180,12 @@ impl Default for Limits {
 /// hand to a renderer: no header block, a missing `From:`, malformed headers or
 /// addresses, unsupported transfer encodings, truncated multipart bodies, unsafe
 /// attachment filenames, and every [`Limits`] violation.
+///
+/// Parsing is not streaming: it reads the complete `&str` the caller already
+/// holds. [`Limits::max_bytes`] refuses oversized input with
+/// [`Error::InputTooLarge`] before any parser-owned allocation. Peak memory can
+/// be roughly 3× the input size (source buffer, decoded copies, part tree), and
+/// the crate does no I/O, so the caller owns the size bound.
 #[must_use = "the parsed message is the result"]
 pub fn parse(raw: &str) -> Result<Message> {
     parse_with_limits(raw, &Limits::default())
@@ -166,9 +205,23 @@ pub fn parse(raw: &str) -> Result<Message> {
 ///
 /// # Errors
 ///
-/// As [`parse`], plus [`Error::LimitExceeded`] when a budget is exhausted.
+/// As [`parse`], plus [`Error::InputTooLarge`] when `raw.len()` exceeds
+/// [`Limits::max_bytes`] and [`Error::LimitExceeded`] when another budget is
+/// exhausted.
+///
+/// The input-size check is syntactic and cheap: it reads the already-known
+/// length and returns before parsing or copying headers and bodies. Parsing is
+/// not streaming, so peak memory can be roughly 3× the input size; the crate
+/// does no I/O, and the caller owns the size bound.
 #[must_use = "the parsed message is the result"]
 pub fn parse_with_limits(raw: &str, limits: &Limits) -> Result<Message> {
+    // Issue #94: this has to run before anything that scales with the input.
+    if raw.len() > limits.max_bytes {
+        return Err(Error::InputTooLarge {
+            limit: limits.max_bytes,
+            size: raw.len(),
+        });
+    }
     Parser { limits, parts: 0 }.parse_message(raw)
 }
 

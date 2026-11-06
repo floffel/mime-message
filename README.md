@@ -187,6 +187,7 @@ Everything malicious is a typed `Error`, never a panic or an OOM:
 | A preserved header that would duplicate a modelled one (`Subject`, `Content-Type`, …) | `DuplicateHeader` |
 | Deep `multipart` nesting | `LimitExceeded { what: "nesting depth" }` |
 | Thousands of parts | `LimitExceeded { what: "part count" }` |
+| Input larger than `Limits::max_bytes` | `InputTooLarge { limit, size }` |
 | Huge bodies or base64 bombs | `LimitExceeded { what: "body bytes" }` |
 | Overlong header line / block / too many headers | `LimitExceeded { … }` |
 | Truncated multipart | `UnterminatedMultipart` |
@@ -204,11 +205,22 @@ end. A `part` of 0 means "no message to point at": `Header::new` rejects a name
 without a header block, and `transfer::decode_base64` decodes a payload that
 belongs to none. `ControlCharacter { name, byte }` follows the same rule at the
 field level: it names the field whose *value* was rejected and keeps the byte the
-check rejected, so a NUL, a VT and a DEL stay distinguishable.
+check rejected, so a NUL, a VT and a DEL stay distinguishable. `InputTooLarge`
+is separate from `LimitExceeded`: it means the bytes were refused before parsing,
+not that a syntactically valid message hit a structural budget.
 
-Defaults (see [`Limits`]): 32 levels of nesting, 1000 entities, 64 KiB of
-headers, 8 KiB per header line, 1000 header fields, 8 MiB per decoded body.
-`parse_with_limits()` takes tighter budgets.
+Defaults (see [`Limits`]): 32 MiB total input, 32 levels of nesting, 1000
+entities, 64 KiB of headers, 8 KiB per header line, 1000 header fields, 8 MiB
+per decoded body. `parse_with_limits()` takes tighter budgets.
+
+Parsing is not streaming: the whole message must be supplied as one `&str`, and
+the caller owns the outer size bound because the crate does no I/O. Give the
+parser a message only after reading at most `Limits::max_bytes` bytes; an input
+over that limit returns `InputTooLarge { limit, size }` before parser-owned
+allocations, not a syntax error. The parser does not stream, copies decoded
+bodies and builds a part tree, so budget for a peak around 3× the input size
+plus whatever the caller keeps alive. Tighten `max_bytes` (and `max_body_bytes`)
+for untrusted mail.
 
 `max_depth` counts `multipart` containers, not entities: the top-level entity is
 depth 0, a leaf part is accepted at any depth a container already reached, and a

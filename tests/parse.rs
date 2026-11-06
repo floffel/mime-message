@@ -215,6 +215,64 @@ fn too_many_headers_hit_the_limit() {
     ));
 }
 
+#[test]
+fn whole_input_size_limit_is_inclusive() {
+    let raw = with_from("Subject: size\r\n\r\nx");
+    let mut limits = Limits::default();
+
+    limits.max_bytes = raw.len();
+    assert_eq!(
+        parse_with_limits(&raw, &limits)
+            .expect("the input length is exactly the limit")
+            .subject,
+        "size"
+    );
+
+    limits.max_bytes = raw.len() - 1;
+    assert_eq!(
+        parse_with_limits(&raw, &limits).unwrap_err(),
+        Error::InputTooLarge {
+            limit: raw.len() - 1,
+            size: raw.len(),
+        }
+    );
+}
+
+#[test]
+fn zero_whole_input_size_accepts_only_empty_input() {
+    let mut limits = Limits::default();
+    limits.max_bytes = 0;
+
+    assert_eq!(
+        parse_with_limits("", &limits).unwrap_err(),
+        Error::EmptyMessage
+    );
+    assert_eq!(
+        parse_with_limits("x", &limits).unwrap_err(),
+        Error::InputTooLarge { limit: 0, size: 1 }
+    );
+}
+
+#[test]
+fn whole_input_size_refusal_is_the_first_check() {
+    // `parse_with_limits` takes `&str`, so the caller's source buffer already
+    // exists and this test cannot directly observe parser allocations. The
+    // guarantee is pinned by the check order in `parse_with_limits`: it compares
+    // `raw.len()` and returns before `Parser::parse_message` can walk the input,
+    // copy headers or decode bodies. Issue #94's comment marks that order.
+    let raw = with_from("broken header with no colon\r\n\r\nx");
+    let mut limits = Limits::default();
+    limits.max_bytes = raw.len() - 1;
+
+    assert_eq!(
+        parse_with_limits(&raw, &limits).unwrap_err(),
+        Error::InputTooLarge {
+            limit: raw.len() - 1,
+            size: raw.len(),
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Addresses
 // ---------------------------------------------------------------------------
