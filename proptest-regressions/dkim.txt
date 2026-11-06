@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1fc6f7fb5562af8bc24d364bd92cbd6e67a8f2ca49a07873599613897da23cff # shrinks to mut tags = {"a": "!\tb=!"}, b_value = "\0", separator = ";", trailing = false, b_last = false
+cc 6cd80b108310d94c3cabad72e310de967ae099a7644ab2b5e34dff7185572bd5 # shrinks to mut tags = {"a": ":B=¡"}, b_value = "¡", separator = ";", trailing = false, b_last = false

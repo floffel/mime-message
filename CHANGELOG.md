@@ -50,6 +50,7 @@ manifest disagree.
   the document.** A malformed `cid:<` sequence is left unchanged, and later valid `cid:`
   references in the HTML are still rewritten. Closes #24.
 - **`charset::decode_strict` reports malformed text instead of replacing bytes.** The existing permissive `charset::decode` entry point is unchanged; strict callers get `Error::MalformedText` with the canonical encoding name. Closes #20.
+- **DKIM wire parser coverage now includes property tests and dedicated fuzz targets.** `parse_tags` and `strip_b_value` have generated tests for rendered tag lists, Unicode and separator inputs, duplicate-tag rejection, and `b=` stripping, while `dkim_signature` and `dkim_dns` fuzz `signatures`, `verify` and `from_dns_record` with body-length and folding boundary shapes. Closes #33.
 
 - **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
   and `impl FromStr for Mailbox` route through the same address and display-name
