@@ -1142,7 +1142,9 @@ pub fn sign(message: &Message, key: &SigningKey, params: &SignParams) -> Result<
 /// [`Error::MissingSignature`] when the message has no signature at all,
 /// [`Error::NoMatchingSignature`] when none uses the key's algorithm,
 /// [`Error::BodyHashMismatch`] and [`Error::SignatureMismatch`] when the
-/// message was changed, and [`Error::InvalidSignature`] for malformed fields.
+/// message was changed, and [`Error::InvalidSignature`] for malformed fields,
+/// a header block with multiple `From` fields, or an `i=` identity outside the
+/// signing domain.
 pub fn verify(raw: &str, key: &VerifyingKey) -> Result<SignatureHeader> {
     let (head, body) = split_head(raw);
     let fields = header_fields(head);
@@ -1153,6 +1155,7 @@ pub fn verify(raw: &str, key: &VerifyingKey) -> Result<SignatureHeader> {
     if candidates.is_empty() {
         return Err(Error::MissingSignature);
     }
+    reject_multiple_from_fields(&fields)?;
 
     // One broken signature must not hide a good one: a message can carry
     // several, from several senders, and only the key's algorithm is ours.
@@ -1195,6 +1198,8 @@ fn verify_one(
     signature: &SignatureHeader,
     key: &VerifyingKey,
 ) -> Result<()> {
+    verify_identity_domain(signature)?;
+
     let canonical_body =
         canonicalize_body(body, signature.body_canonicalization, signature.body_length);
     let computed = Sha256::digest(&canonical_body);
@@ -1228,6 +1233,67 @@ fn verify_one(
         }),
         Err(VerifyFailure::Malformed(message)) => Err(Error::InvalidSignature(message)),
     }
+}
+
+/// RFC 6376 §5.4 requires exactly one signed `From` field and the displayed
+/// field must be the one covered by the signature. Since `signing_input`
+/// consumes header instances bottom-up, rejecting any header block with more
+/// than one `From` closes the topmost-instance spoof.
+fn reject_multiple_from_fields(fields: &[Field]) -> Result<()> {
+    let from_count = fields
+        .iter()
+        .filter(|field| field.name.eq_ignore_ascii_case("From"))
+        .count();
+    if from_count > 1 {
+        return Err(Error::InvalidSignature(
+            "message contains multiple From header fields".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// RFC 6376 §3.5 requires the `i=` domain to be `d=` or a subdomain of it.
+fn verify_identity_domain(signature: &SignatureHeader) -> Result<()> {
+    let Some(identity) = signature.identity.as_deref() else {
+        return Ok(());
+    };
+    let Some((_, identity_domain)) = identity.rsplit_once('@') else {
+        return Err(Error::InvalidSignature(
+            "i= identity is not local@domain".to_string(),
+        ));
+    };
+    if identity_domain.is_empty() {
+        return Err(Error::InvalidSignature(
+            "i= identity is not local@domain".to_string(),
+        ));
+    }
+    if !domain_is_equal_or_subdomain(identity_domain, &signature.domain) {
+        return Err(Error::InvalidSignature(
+            "i= domain is not d= or a subdomain".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn domain_is_equal_or_subdomain(identity_domain: &str, signing_domain: &str) -> bool {
+    if identity_domain.eq_ignore_ascii_case(signing_domain) {
+        return true;
+    }
+    let identity = identity_domain.as_bytes();
+    let signing = signing_domain.as_bytes();
+    if identity.len() <= signing.len() {
+        return false;
+    }
+    let suffix_start = identity.len() - signing.len();
+    identity[suffix_start - 1] == b'.' && ascii_eq_ignore_case(&identity[suffix_start..], signing)
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
 /// Builds the bytes that are hashed: the listed headers plus the signature
