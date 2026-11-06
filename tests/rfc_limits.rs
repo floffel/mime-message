@@ -337,6 +337,23 @@ fn the_encoder_escapes_whitespace_before_a_soft_break_at_the_boundary() {
     }
 }
 
+#[test]
+fn the_encoder_reserves_the_last_column_for_the_soft_break_marker() {
+    let just_inside = "a".repeat(MAX_QUOTED_PRINTABLE_LINE - 1);
+    assert_eq!(
+        transfer::encode_quoted_printable(&just_inside),
+        just_inside,
+        "a 75-column line has no soft break"
+    );
+
+    let just_outside = "a".repeat(MAX_QUOTED_PRINTABLE_LINE);
+    assert_eq!(
+        transfer::encode_quoted_printable(&just_outside),
+        format!("{}a=\r\na", "a".repeat(MAX_QUOTED_PRINTABLE_LINE - 2)),
+        "the 76th literal starts a new line, leaving column 76 for the soft-break '='"
+    );
+}
+
 proptest! {
     #[test]
     fn quoted_printable_round_trips_any_text(text in any::<String>()) {

@@ -72,6 +72,8 @@ manifest disagree.
 
 ### Changed
 
+- **Quoted-printable dependency decision documented and pinned.** The maintained `quoted_printable` 0.5.2 candidate is rejected by `cargo deny` because its `0BSD` license is outside the current allowlist, so the local codec remains and its exact 76-column soft-break boundary is covered by tests. Closes #62.
+
 - **DKIM verification now rejects multiple `From` fields and `i=` identities outside the signing domain.** A forged topmost `From` or a signature whose identity domain is not `d=` or a subdomain of it now fails with a terminal `InvalidSignature` instead of verifying as valid. Closes #30.
 - Documented why DKIM DNS-key parsing and serialization stay local instead of using
   `mail-auth`: its DKIM1 record API is not usable without a DNS backend and exposes no
