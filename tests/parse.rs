@@ -918,7 +918,7 @@ fn builder_render_parse_roundtrip_simple() {
 #[test]
 fn builder_render_parse_roundtrip_with_alternative_and_attachment() {
     let built = Message::builder()
-        .from("Müller, Jörg <jm@example.com>")
+        .from("\"Müller, Jörg\" <jm@example.com>")
         .unwrap()
         .to("a@example.com")
         .unwrap()
@@ -948,7 +948,7 @@ fn builder_render_parse_roundtrip_with_alternative_and_attachment() {
 #[test]
 fn parsing_a_rendered_message_keeps_mailboxes_with_awkward_names() {
     let built = Message::builder()
-        .from("a \"quoted\", name <a@example.com>")
+        .from("\"a \\\"quoted\\\", name\" <a@example.com>")
         .unwrap()
         .to("Back\\slash <b@example.com>")
         .unwrap()
@@ -1163,6 +1163,26 @@ fn mailbox_parse_rejects_non_cfws_after_angle_addr() {
             "{raw} must be rejected rather than silently truncated"
         );
     }
+}
+
+#[test]
+fn mailbox_parse_shares_the_address_list_scanner() {
+    for raw in [
+        "a@example.com, b@example.com",
+        "Team: a@example.com;",
+        "a@example.com;",
+    ] {
+        assert!(
+            matches!(Message::builder().from(raw), Err(Error::InvalidMailbox(_))),
+            "{raw} must stay a single mailbox on the builder path"
+        );
+    }
+
+    let raw = with_from("To: Team: a@example.com, b@example.com;\r\n\r\nx");
+    let message = parse(&raw).unwrap();
+    assert_eq!(message.to.len(), 2);
+    assert_eq!(message.to[0].address, "a@example.com");
+    assert_eq!(message.to[1].address, "b@example.com");
 }
 
 // ---------------------------------------------------------------------------

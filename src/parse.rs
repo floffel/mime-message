@@ -680,7 +680,23 @@ fn parse_joined_addresses(headers: &Headers, name: &'static str) -> Result<Vec<M
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AddressListMode {
+    Many,
+    Single,
+}
+
+impl AddressListMode {
+    fn rejects_separator(self) -> bool {
+        self == Self::Single
+    }
+}
+
 fn parse_address_list(raw: &str, header: &'static str) -> Result<Vec<Mailbox>> {
+    scan_addresses(raw, header, AddressListMode::Many)
+}
+
+fn scan_addresses(raw: &str, header: &'static str, mode: AddressListMode) -> Result<Vec<Mailbox>> {
     let bytes = raw.as_bytes();
     let mut out = Vec::new();
     let mut token_start = 0usize;
@@ -693,17 +709,28 @@ fn parse_address_list(raw: &str, header: &'static str) -> Result<Vec<Mailbox>> {
             b'(' => index = skip_comment(raw, index),
             b'<' => index = skip_angle(raw, index),
             b':' if !in_group => {
+                if mode.rejects_separator() {
+                    return Err(Error::invalid_mailbox(raw));
+                }
                 in_group = true;
                 index += 1;
                 token_start = index;
             }
-            b';' if in_group => {
-                push_address(&raw[token_start..index], header, &mut out)?;
-                in_group = false;
+            b';' => {
+                if mode.rejects_separator() {
+                    return Err(Error::invalid_mailbox(raw));
+                }
+                if in_group {
+                    push_address(&raw[token_start..index], header, &mut out)?;
+                    in_group = false;
+                }
                 index += 1;
                 token_start = index;
             }
             b',' => {
+                if mode.rejects_separator() {
+                    return Err(Error::invalid_mailbox(raw));
+                }
                 push_address(&raw[token_start..index], header, &mut out)?;
                 index += 1;
                 token_start = index;
@@ -774,8 +801,20 @@ fn parse_single_address(raw: &str, header: &'static str) -> Result<Mailbox> {
     })
 }
 
+// Keep the address parser local for now. The maintained candidates require a
+// newer MSRV than this crate (`structured-email-address` 0.0.22 needs Rust 1.92
+// and `mail-parser` 1.0.0 needs Rust 1.98, while this crate declares 1.89), so
+// the builder path enters the same scanner as the wire path instead of carrying
+// a separate implementation.
 pub(crate) fn parse_mailbox(raw: &str) -> Result<Mailbox> {
-    parse_single_address(raw, "mailbox")
+    let mut mailboxes = scan_addresses(raw, "mailbox", AddressListMode::Single)?.into_iter();
+    let Some(mailbox) = mailboxes.next() else {
+        return Err(Error::invalid_mailbox(raw));
+    };
+    if mailboxes.next().is_some() {
+        return Err(Error::invalid_mailbox(raw));
+    }
+    Ok(mailbox)
 }
 
 pub(crate) fn validate_address(address: &str) -> Result<()> {
