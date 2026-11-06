@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 52c35cf515eedcfdba08ea8fa6952ef2defe8b9348c6ade7db57ca1bce08c9ad # shrinks to cases = [Literal("<d[='"), Reference { text: "a", unresolved: false }]

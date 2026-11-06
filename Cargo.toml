@@ -16,6 +16,7 @@ exclude = [".github/**", "deny.toml", "fuzz/**"]
 base64 = "0.23"
 # Charset labels and decoding tables: the WHATWG registry, not a hand-rolled list.
 encoding_rs = "0.8"
+html-escape = "0.3"
 sha2 = "0.10"
 thiserror = "2"
 
