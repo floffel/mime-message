@@ -3,6 +3,10 @@
 #![allow(clippy::format_push_string)]
 
 //! Rendering: headers, folding, encoding, multipart bodies.
+//!
+//! `mail-builder` cannot replace this module without changing the byte-exact
+//! wire format this crate promises. The renderer keeps the local serialiser and
+//! documents the specific incompatibilities next to the helpers they affect.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
@@ -369,6 +373,13 @@ fn has_forbidden_chars(value: &str) -> bool {
 /// Folds at single-space boundaries so no line exceeds 78 characters
 /// (RFC 5322 §2.1.1).
 ///
+/// `mail-builder`'s `FoldWriter` folds through its own whitespace model, measures
+/// bytes rather than characters, and wraps parameter lists after semicolons.
+/// This crate's contract is narrower and byte-exact: only ASCII spaces are fold
+/// points, non-ASCII whitespace stays part of the value, and the limit is
+/// measured in characters. Pinned by `fold_header_counts_characters_not_utf8_bytes`
+/// and `rendered_unicode_whitespace_round_trips_byte_for_byte`.
+///
 /// Folding replaces one space with CRLF + space; since unfolding removes only
 /// the CRLF, the value round-trips byte for byte. Runs of whitespace are never
 /// used as a fold point, so they survive unchanged. A single token longer than
@@ -411,6 +422,12 @@ fn header_len(text: &str) -> usize {
 }
 
 /// RFC 2047 encoded-word for non-ASCII header content.
+///
+/// `mail-builder` delegates encoded-words to `encodify`, which may choose Q or B
+/// encoding, lower-case charset labels, and different word boundaries. This
+/// crate pins upper-case `=?UTF-8?B?...?=` words, each independently decodable.
+/// Pinned by `encode_word_pins_uppercase_utf8_base64_chunks` and
+/// `every_rfc2047_word_decodes_on_its_own`.
 fn encode_word(value: &str) -> String {
     const MAX_BYTES: usize = 30;
     if value.is_ascii() {
@@ -445,6 +462,12 @@ fn normalise_newlines(body: &str) -> String {
         .replace('\n', CRLF)
 }
 
+/// The exact base64 text used both for part bodies and boundary preflight.
+///
+/// `mail-builder` serialises attachment bodies internally but does not expose
+/// the wrapped base64 text. Boundary selection here needs those bytes before
+/// choosing the boundary, because the delimiter scan must see the same payload
+/// that will be emitted. Pinned by `base64_wrapped_uses_76_column_crlf_lines`.
 fn base64_wrapped(data: &[u8]) -> String {
     let encoded = STANDARD.encode(data);
     let mut out = String::new();
@@ -456,6 +479,12 @@ fn base64_wrapped(data: &[u8]) -> String {
 }
 
 /// Neutralises anything that could break out of the quoted filename.
+///
+/// `mail-builder` percent-encodes controls and non-ASCII parameter bytes in its
+/// RFC 2231 path and escapes quotes in ordinary quoted strings. This crate also
+/// keeps an ASCII fallback filename, so the fallback is sanitised in place with
+/// `_` replacements. Pinned by `sanitise_filename_replaces_escape_bytes` and
+/// `attachment_filename_cannot_inject_headers`.
 fn sanitise_filename(name: &str) -> String {
     name.chars()
         .map(|ch| {
@@ -473,6 +502,13 @@ const MAX_BOUNDARY_ATTEMPTS: usize = 1024;
 
 /// Picks multipart boundary strings that do not occur as delimiter lines in any
 /// encoded part.
+///
+/// `mail-builder` creates pseudo-random boundaries from process/thread entropy
+/// and does not scan candidate boundaries against already encoded bodies or part
+/// metadata. This crate promises stable re-rendering, so candidates are derived
+/// from the message bytes and only accepted after a delimiter-line preflight.
+/// Pinned by `boundary_seed_is_deterministic_and_attempt_sensitive` and
+/// `boundary_choice_skips_body_and_filename_candidate`.
 fn choose_boundaries(
     message: &Message,
     nested_alternative: bool,
