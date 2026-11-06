@@ -553,6 +553,32 @@ mod tests {
             }
         }
 
+        /// Echoing every reference back only drops the consumed `cid:` schemes,
+        /// so the rewrite can never grow the text and never invents a byte:
+        /// the output is a subsequence of the input, and every reference handed
+        /// to the resolver is a real slice of that input.
+        #[test]
+        fn rewrite_echo_only_removes_the_scheme(html in any::<String>()) {
+            let mut seen = Vec::new();
+            let output = rewrite(&html, |reference| {
+                seen.push(reference.to_string());
+                Some(reference.to_string())
+            });
+
+            prop_assert!(output.len() <= html.len(), "{output:?} grew from {html:?}");
+            let mut haystack = html.bytes();
+            for byte in output.bytes() {
+                prop_assert!(
+                    haystack.any(|candidate| candidate == byte),
+                    "byte 0x{byte:02x} of {output:?} is not in order in {html:?}"
+                );
+            }
+            for reference in &seen {
+                prop_assert!(!reference.is_empty(), "empty callback reference");
+                prop_assert!(html.contains(reference), "{reference:?} is not in {html:?}");
+            }
+        }
+
         #[test]
         fn rewrite_ignores_empty_and_whitespace_references(gap in "[ \t\r\n]{1,8}") {
             let html = format!("before cid:{gap}after");

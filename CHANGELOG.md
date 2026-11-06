@@ -38,6 +38,11 @@ manifest disagree.
 
 ### Added
 
+- **A cargo-fuzz target for the `cid:` reference rewriter.** `fuzz/fuzz_targets/cid.rs`
+  drives `cid::rewrite` and `Message::rewrite_cid_references` over arbitrary UTF-8 with
+  resolving and non-resolving closures, asserting totality, preservation of unresolved
+  input, and that the rewrite never invents bytes. Closes #25.
+
 - **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
   and `impl FromStr for Mailbox` route through the same address and display-name
   checks as parsing, and `MessageBuilder::from_mailbox` / `to_mailbox` /

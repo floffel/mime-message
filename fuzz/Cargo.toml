@@ -21,4 +21,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "cid"
+path = "fuzz_targets/cid.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
