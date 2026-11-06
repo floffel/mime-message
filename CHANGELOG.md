@@ -75,6 +75,8 @@ manifest disagree.
 
 ### Changed
 
+- **Documented why RFC 2047 decoding remains local instead of using `s3s-rfc2047` or `mailrs-rfc2047`.** The maintained candidates lose pinned behaviours this crate requires (verbatim fallback, `charset*language` labels, exact whitespace handling) or exceed the declared MSRV, so the local decoder remains and the audit result is recorded beside it. Closes #60.
+
 - **Quoted-printable dependency decision documented and pinned.** The maintained `quoted_printable` 0.5.2 candidate is rejected by `cargo deny` because its `0BSD` license is outside the current allowlist, so the local codec remains and its exact 76-column soft-break boundary is covered by tests. Closes #62.
 - **Outbound MIME serialisation keeps the local renderer, with per-helper `mail-builder` incompatibility notes and regression coverage for folding, encoded-words, filenames, base64 wrapping and boundary selection.** Closes #56.
 
