@@ -112,7 +112,9 @@ claims:
   registry does not list (`utf16`, `utf16be`, `latin9`). RFC 2978 asks receivers to
   be liberal about labels: US-ASCII and ISO-8859-1 decode as Windows-1252 the way
   mail clients do, and unknown or empty labels fall back to UTF-8 with replacement
-  characters instead of failing the parse.
+  characters instead of failing the parse. `charset::decode` stays permissive for
+  this parser path; callers that must fail closed on corrupt bytes use
+  `charset::decode_strict`.
 - Transfer encodings: `base64` (wrapped, unpadded and mixed-case input
   accepted), `quoted-printable` (soft line breaks), `7bit`/`8bit`/`binary`.
 - `multipart/mixed`, `multipart/alternative` and `multipart/related`, nested

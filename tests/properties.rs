@@ -472,6 +472,25 @@ proptest! {
         let _ = mime_message::charset::decode(&bytes, &label);
     }
 
+    /// Strict charset decoding accepts exactly the byte strings the permissive
+    /// decoder can round-trip without replacement.
+    #[test]
+    fn charset_decode_strict_matches_replacement_free_decode(
+        bytes in prop::collection::vec(any::<u8>(), 0..256),
+        label in "[a-zA-Z0-9\\-_.]{0,20}",
+    ) {
+        let lenient = mime_message::charset::decode(&bytes, &label);
+        match mime_message::charset::decode_strict(&bytes, &label) {
+            Ok(strict) => {
+                prop_assert_eq!(strict, lenient);
+            }
+            Err(Error::MalformedText { .. }) => {
+                prop_assert!(lenient.contains(char::REPLACEMENT_CHARACTER));
+            }
+            Err(other) => prop_assert!(false, "unexpected charset error: {other:?}"),
+        }
+    }
+
     /// Quoted-printable decoding never grows the input beyond the input length
     /// and never panics on arbitrary text.
     #[test]

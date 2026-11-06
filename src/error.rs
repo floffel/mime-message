@@ -240,6 +240,27 @@ pub enum Error {
         /// The configured maximum.
         limit: usize,
     },
+    /// Text bytes are malformed in the resolved charset.
+    ///
+    /// This is returned by [`charset::decode_strict`](crate::charset::decode_strict).
+    /// The ordinary [`charset::decode`](crate::charset::decode) path keeps its
+    /// permissive replacement behaviour; callers that need to distinguish
+    /// corrupt input from valid text use the strict entry point and match this
+    /// variant.
+    ///
+    /// ```
+    /// use mime_message::{charset, Error};
+    ///
+    /// assert_eq!(
+    ///     charset::decode_strict(b"a\xffb", "utf-8").unwrap_err(),
+    ///     Error::MalformedText { charset: "UTF-8" }
+    /// );
+    /// ```
+    #[error("malformed {charset} text")]
+    MalformedText {
+        /// The canonical `encoding_rs` name of the encoding that rejected the input.
+        charset: &'static str,
+    },
     /// A DKIM private or public key could not be read.
     ///
     /// Covers PEM that is not a key, an unknown key type, a revoked (empty
