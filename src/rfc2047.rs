@@ -17,6 +17,15 @@ use crate::transfer;
 /// Longest charset label accepted inside an encoded-word.
 const MAX_CHARSET_LEN: usize = 100;
 
+// The maintained alternatives were audited for issue #60. `s3s-rfc2047`
+// passes `cargo deny`, but it only decodes UTF-8, trims whole inputs, and
+// requires Rust 1.96 while this crate declares 1.89. `mailrs-rfc2047` resolves
+// WHATWG charsets, but it still trims, collapses only space/tab gaps, and treats
+// the charset label literally, so it rejects the `charset*language` spelling
+// this crate accepts. `rfc2047-decoder` errors on malformed words where this
+// decoder must keep them verbatim and has a much larger parser dependency
+// graph. Keep the local scanner until a replacement preserves these behaviours.
+
 /// Decodes every RFC 2047 encoded-word in `input`.
 ///
 /// Whitespace between two adjacent encoded-words is removed, as RFC 2047 §6.2
