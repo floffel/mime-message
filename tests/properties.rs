@@ -467,7 +467,7 @@ proptest! {
     #[test]
     fn charset_decode_is_total(
         bytes in prop::collection::vec(any::<u8>(), 0..256),
-        label in "[a-zA-Z0-9\\-_.]{0,20}",
+        label in any::<String>(),
     ) {
         let _ = mime_message::charset::decode(&bytes, &label);
     }

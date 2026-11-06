@@ -338,6 +338,7 @@ Documented rather than silently missing:
 cargo +nightly fuzz build parse       # CI builds this target
 cargo +nightly fuzz run parse         # run it (seeds: fuzz/corpus/parse)
 cargo +nightly fuzz run parse fuzz/artifacts/parse/<crash>   # reproduce
+cargo +nightly fuzz run charset       # arbitrary bytes + charset labels
 ```
 
 The target parses arbitrary bytes both as UTF-8 and lossily, rewrites `cid:`

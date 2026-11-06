@@ -70,6 +70,8 @@ manifest disagree.
   line endings, the 78-byte header limit, the render→parse round trip and `cid:`
   rewriting, and prints the rendered headers.
 
+- **Property and fuzz coverage for charset decoding and label normalization.** Closes #21.
+
 ### Changed
 
 - **DKIM verification now rejects multiple `From` fields and `i=` identities outside the signing domain.** A forged topmost `From` or a signature whose identity domain is not `d=` or a subdomain of it now fails with a terminal `InvalidSignature` instead of verifying as valid. Closes #30.
