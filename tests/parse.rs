@@ -1186,7 +1186,7 @@ fn mailbox_parse_shares_the_address_list_scanner() {
 }
 
 // ---------------------------------------------------------------------------
-// Charset registry: every WHATWG label, not a closed list of four families
+// Charset registry: every WHATWG label, including non-Latin families
 // ---------------------------------------------------------------------------
 
 fn base64_bytes(bytes: &[u8]) -> String {

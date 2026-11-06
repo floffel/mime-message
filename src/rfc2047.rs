@@ -254,8 +254,16 @@ mod tests {
 
     #[test]
     fn long_charset_label_is_not_an_encoded_word() {
-        let label = "x".repeat(200);
-        let input = format!("=?{label}?B?YWJj?=");
-        assert_eq!(decode(&input), input);
+        // The scanner's defensive label cap is inclusive. An unknown label at
+        // the limit still reaches the charset fallback; one byte more is kept
+        // verbatim before any decoder is consulted.
+        let at_limit = format!("=?{}?B?YWJj?=", "x".repeat(MAX_CHARSET_LEN));
+        assert_eq!(decode(&at_limit), "abc");
+
+        let over_limit = format!("=?{}?B?YWJj?=", "x".repeat(MAX_CHARSET_LEN + 1));
+        assert_eq!(decode(&over_limit), over_limit);
+
+        let much_too_long = format!("=?{}?B?YWJj?=", "x".repeat(200));
+        assert_eq!(decode(&much_too_long), much_too_long);
     }
 }
