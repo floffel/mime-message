@@ -167,7 +167,9 @@ pub fn try_data_uri(content_type: &str, data: &[u8]) -> Result<String> {
 ///
 /// `resolve` receives the reference without the `cid:` scheme (surrounding
 /// angle brackets may still be present, as senders write both forms). Returning
-/// `None` leaves that reference exactly as it was.
+/// `None` leaves that reference exactly as it was. A malformed angle-bracket
+/// reference that is not closed before whitespace or another angle bracket is
+/// left unchanged.
 ///
 /// ```
 /// use mime_message::cid;
@@ -335,21 +337,39 @@ fn is_word_byte(byte: u8) -> bool {
 /// End index of the reference that starts right after `cid:`.
 fn reference_end(bytes: &[u8], start: usize) -> usize {
     if bytes.get(start) == Some(&b'<') {
-        return match bytes[start..].iter().position(|byte| *byte == b'>') {
-            Some(offset) => start + offset + 1,
-            None => bytes.len(),
+        return match angle_reference_end(bytes, start) {
+            Some(end) => end,
+            None => start,
         };
     }
     let mut end = start;
-    while end < bytes.len()
-        && !matches!(
-            bytes[end],
-            b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'(' | b')' | b'<' | b'>' | b',' | b';'
-        )
-    {
+    while end < bytes.len() && !is_reference_delimiter(bytes[end]) {
         end += 1;
     }
     end
+}
+
+/// End index of a well-formed angle-bracket reference, if there is one.
+fn angle_reference_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut end = start + 1;
+    while end < bytes.len() {
+        let byte = bytes[end];
+        if byte == b'>' {
+            return Some(end + 1);
+        }
+        if byte == b'<' || byte.is_ascii_whitespace() || byte.is_ascii_control() {
+            return None;
+        }
+        end += 1;
+    }
+    None
+}
+
+fn is_reference_delimiter(byte: u8) -> bool {
+    matches!(
+        byte,
+        b' ' | b'\t' | b'\r' | b'\n' | b'"' | b'\'' | b'(' | b')' | b'<' | b'>' | b',' | b';'
+    )
 }
 
 #[cfg(test)]
@@ -410,10 +430,25 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_handles_unterminated_angle_reference() {
+    fn rewrite_accepts_only_well_formed_angle_references() {
+        assert_eq!(rewrite("cid:<abc>", |r| Some(format!("/{r}"))), "/<abc>");
+        assert_eq!(rewrite("cid:<abc", |r| Some(format!("/{r}"))), "cid:<abc");
         assert_eq!(
-            rewrite("<img src=cid:<abc", |r| Some(format!("/{r}"))),
-            "<img src=/<abc"
+            rewrite("cid:<abc def>", |r| Some(format!("/{r}"))),
+            "cid:<abc def>"
+        );
+        assert_eq!(
+            rewrite("cid:<abc<def>", |r| Some(format!("/{r}"))),
+            "cid:<abc<def>"
+        );
+    }
+
+    #[test]
+    fn rewrite_preserves_valid_html_after_a_malformed_angle_reference() {
+        let html = "<p>before cid:<broken <strong>after</strong></p>";
+        assert_eq!(
+            rewrite(html, |reference| Some(format!("[{reference}]"))),
+            html
         );
     }
 
@@ -593,17 +628,16 @@ mod tests {
         }
 
         #[test]
-        fn rewrite_unterminated_angle_reference_hands_over_the_tail(tail in "[^>]{0,20}") {
+        fn rewrite_ignores_unterminated_angle_references(tail in "[^>cC]{0,20}") {
             let html = format!("before cid:<{tail}");
-            let seen = std::cell::RefCell::new(Vec::new());
-            let output = rewrite(&html, |reference| {
-                seen.borrow_mut().push(reference.to_string());
-                Some(format!("[{reference}]"))
+            let calls = std::cell::Cell::new(0usize);
+            let output = rewrite(&html, |_| {
+                calls.set(calls.get() + 1);
+                Some("replacement".to_string())
             });
-            let expected_reference = format!("<{tail}");
 
-            prop_assert_eq!(seen.into_inner(), vec![expected_reference.clone()]);
-            prop_assert_eq!(output, format!("before [{expected_reference}]"));
+            prop_assert_eq!(calls.get(), 0);
+            prop_assert_eq!(output, html);
         }
 
         #[test]

@@ -44,6 +44,9 @@ manifest disagree.
   input, and that the rewrite never invents bytes. Closes #25.
 - **Property and fuzz coverage for the wire-facing header parser.** `Header::from_wire` now has generated invariant tests and a cargo-fuzz target drives the header-block path with default limits. Closes #43.
 - **Whole-input size is now a typed refusal.** `Limits::max_bytes` bounds the complete message and oversized input returns `Error::InputTooLarge { limit, size }` before parser-owned allocations, with the 3× peak documented in the README and on `Limits::max_bytes`. Closes #94.
+- **`cid::rewrite` no longer treats an unterminated angle-bracket reference as the rest of
+  the document.** A malformed `cid:<` sequence is left unchanged, and later valid `cid:`
+  references in the HTML are still rewritten. Closes #24.
 
 - **`Mailbox` now has validated construction and direct builder reuse.** `Mailbox::new`
   and `impl FromStr for Mailbox` route through the same address and display-name

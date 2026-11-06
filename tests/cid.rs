@@ -219,6 +219,16 @@ fn unresolved_references_are_left_alone() {
 }
 
 #[test]
+fn malformed_angle_reference_does_not_consume_following_html() {
+    let message = parse(related_message()).expect("parse");
+    let html = "<p>before cid:<broken <img src=\"cid:logo@example.com\"> after</p>";
+    assert_eq!(
+        message.rewrite_cid_references(html),
+        "<p>before cid:<broken <img src=\"data:image/png;base64,iVBORw0KGgo=\"> after</p>"
+    );
+}
+
+#[test]
 fn a_custom_resolver_can_point_at_urls() {
     let message = parse(related_message()).expect("parse");
     let html = message.html_body.clone().expect("html");
