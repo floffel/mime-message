@@ -781,6 +781,90 @@ fn identity_and_other_tags_survive_the_round_trip() {
 }
 
 #[test]
+fn identity_domain_must_be_d_or_a_subdomain_of_d() {
+    let key = SigningKey::from_ed25519_seed(&[74u8; 32]);
+    let public = key.verifying_key();
+
+    let exact = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@example.com")
+        .expect("identity");
+    let raw = String::from_utf8(sample_message().sign(&key, &exact).expect("sign")).expect("utf-8");
+    assert!(dkim::verify(&raw, &public).is_ok());
+
+    let subdomain = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@mail.example.com")
+        .expect("identity");
+    let raw =
+        String::from_utf8(sample_message().sign(&key, &subdomain).expect("sign")).expect("utf-8");
+    assert!(dkim::verify(&raw, &public).is_ok());
+
+    let sibling_suffix = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@badexample.com")
+        .expect("identity");
+    let raw = String::from_utf8(sample_message().sign(&key, &sibling_suffix).expect("sign"))
+        .expect("utf-8");
+    assert_eq!(
+        dkim::verify(&raw, &public).unwrap_err(),
+        Error::InvalidSignature("i= domain is not d= or a subdomain".to_string())
+    );
+
+    let outside = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@evil.example")
+        .expect("identity");
+    let raw =
+        String::from_utf8(sample_message().sign(&key, &outside).expect("sign")).expect("utf-8");
+    assert_eq!(
+        dkim::verify(&raw, &public).unwrap_err(),
+        Error::InvalidSignature("i= domain is not d= or a subdomain".to_string())
+    );
+
+    let shorter = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@com")
+        .expect("identity");
+    let raw =
+        String::from_utf8(sample_message().sign(&key, &shorter).expect("sign")).expect("utf-8");
+    assert_eq!(
+        dkim::verify(&raw, &public).unwrap_err(),
+        Error::InvalidSignature("i= domain is not d= or a subdomain".to_string())
+    );
+
+    let malformed = SignParams::new("example.com", "sel")
+        .expect("params")
+        .identity("@")
+        .expect("identity");
+    let raw =
+        String::from_utf8(sample_message().sign(&key, &malformed).expect("sign")).expect("utf-8");
+    assert_eq!(
+        dkim::verify(&raw, &public).unwrap_err(),
+        Error::InvalidSignature("i= identity is not local@domain".to_string())
+    );
+}
+
+#[test]
+fn multiple_from_headers_are_rejected_before_verification() {
+    let key = SigningKey::from_ed25519_seed(&[75u8; 32]);
+    let signed = sample_message()
+        .sign(
+            &key,
+            &SignParams::new("example.com", "sel").expect("params"),
+        )
+        .expect("sign");
+    let raw = String::from_utf8(signed).expect("utf-8");
+    assert!(dkim::verify(&raw, &key.verifying_key()).is_ok());
+
+    let forged = format!("From: forged@example.net\r\n{raw}");
+    assert_eq!(
+        dkim::verify(&forged, &key.verifying_key()).unwrap_err(),
+        Error::InvalidSignature("message contains multiple From header fields".to_string())
+    );
+}
+
+#[test]
 fn dkim_parameters_reject_header_injection() {
     let key = SigningKey::from_ed25519_seed(&[79u8; 32]);
     let message = sample_message();

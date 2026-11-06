@@ -66,6 +66,8 @@ manifest disagree.
 
 ### Changed
 
+- **DKIM verification now rejects multiple `From` fields and `i=` identities outside the signing domain.** A forged topmost `From` or a signature whose identity domain is not `d=` or a subdomain of it now fails with a terminal `InvalidSignature` instead of verifying as valid. Closes #30.
+
 - **Breaking (the next release is `0.4.0`): `SignParams` validates caller-supplied DKIM tags.**
   `SignParams::new`, `identity` and `signed_headers` now return `Result`, rejecting empty domain/selector, CR, LF, NUL,
   semicolons in tag values, and `:` or other non-`tchar` bytes in signed-header names with `Error::HeaderInjection` or
