@@ -102,6 +102,11 @@ fn nth_payload_byte(input: &str, n: usize) -> Option<usize> {
 /// escapes are kept as literal text instead of failing the parse —
 /// quoted-printable damage is common and never a security boundary.
 ///
+/// This wrapper is kept local because the maintained `quoted_printable` 0.5.2
+/// candidate is outside this crate's dependency-license policy (`0BSD` is not
+/// allowed by `deny.toml`), and the local decoder preserves malformed `=`
+/// sequences instead of rejecting the body.
+///
 /// ```
 /// use mime_message::transfer;
 ///
@@ -190,6 +195,12 @@ fn quoted_printable_capacity(input_len: usize) -> usize {
 /// assert_eq!(transfer::decode_quoted_printable(&encoded), input.as_bytes());
 /// assert_eq!(transfer::encode_quoted_printable(""), "");
 /// ```
+///
+/// The maintained `quoted_printable` 0.5.2 candidate cannot be adopted here
+/// because `cargo deny` rejects its `0BSD` license under the current allowlist.
+/// This encoder is therefore kept local, including the exact wrapping rule that
+/// reserves the final column for the `=` of a soft line break; the tests below
+/// pin that boundary behaviour.
 #[must_use]
 pub fn encode_quoted_printable(input: &str) -> String {
     let bytes = input.as_bytes();
