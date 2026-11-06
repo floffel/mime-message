@@ -7,6 +7,11 @@ All notable changes to this crate are documented here. The format follows
 
 ## Versioning
 
+`0.3.4` is the published release. The release workflow and registry token are
+configured; no `v0.1.0` was ever cut. The next release is `0.4.0` because the
+API review added `#[non_exhaustive]` to payload types, a breaking change for
+downstream struct literals.
+
 The crate is pre-1.0 (`0.y.z`), so Cargo's compatibility rule for `0.y` applies:
 **a minor bump may break, a patch bump never does.** Concretely:
 
@@ -37,6 +42,10 @@ manifest disagree.
 ## [Unreleased]
 
 ### Added
+
+- **The README is a compiled, runnable doctest, and the typical invoice mail is an example.** `src/lib.rs` includes `README.md` under `cfg(doctest)`, the quick start builds text + HTML alternative + PDF attachment and parses it back, and `examples/compose_and_parse.rs` exercises inline `Content-ID`, RFC 2231 filenames and `cid:` rewriting in CI.
+- **The release gate now pins the feature matrix and the no-I/O promise.** `tests/feature_matrix.rs` asserts that `default = []`, `dkim` is optional and feature-gated, both configurations run their error paths, and the manifest has no HTTP/runtime dependency; the README documents the choice. Closes #2.
+- **Property coverage for adversarial header shapes.** CRLF injection, unbalanced comments and broken RFC 2047 encoded-words are generated against `parse`, asserting no panic and no line separator in a decoded modelled field. The header fuzz target now checks the same invariant.
 
 - **The `cid:` rewriter now rewrites only HTML URL positions and decodes HTML character references in those URLs.** It covers URL-bearing attributes, `srcset` candidates and CSS `url(...)` functions, skips comments and script text, fixes non-ASCII URL byte classification, and documents the remaining scanner limits after `lol_html`/`cssparser` adoption failed `cargo deny` licensing. Closes #23.
 - **Streaming parsing surface.** `stream::parse_reader()`, `stream::parse_reader_with_limits()` and `stream::StreamParser` parse from caller-supplied byte chunks with the same typed validation and `Limits` as the whole-buffer parser. Closes #11.

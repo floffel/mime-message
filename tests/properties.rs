@@ -7,6 +7,7 @@
 
 use std::fmt::Write as _;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use mime_message::{parse, parse_with_limits, Attachment, Error, Header, Limits, Mailbox, Message};
 use proptest::prelude::*;
 
@@ -176,6 +177,44 @@ fn normalise_newlines(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
+/// A decoded value assigned to a modelled header must not contain any line
+/// separator, whether it was encoded by the sender or assembled around one.
+fn assert_no_line_separators(field: &str, value: &str) {
+    assert!(
+        !value
+            .chars()
+            .any(|ch| matches!(ch, '\r' | '\n' | '\u{85}' | '\u{2028}' | '\u{2029}')),
+        "{field} retained a line separator: {value:?}"
+    );
+}
+
+fn scan_header_fields(message: &Message, raw: &str) {
+    assert_no_line_separators("Subject", &message.subject);
+    if let Some(name) = &message.from.name {
+        assert_no_line_separators("From display name", name);
+    }
+    for mailbox in message.to.iter().chain(&message.cc).chain(&message.bcc) {
+        if let Some(name) = &mailbox.name {
+            assert_no_line_separators("recipient display name", name);
+        }
+    }
+    for header in message.headers() {
+        assert_no_line_separators(header.name(), header.value());
+    }
+    for attachment in &message.attachments {
+        assert_no_line_separators("attachment filename", &attachment.filename);
+        if let Some(content_id) = &attachment.content_id {
+            assert_no_line_separators("Content-ID", content_id);
+        }
+    }
+    // This is also the guard that catches a malformed generated input: the
+    // message's own blank-line separator is the only one the parser accepted.
+    assert!(
+        raw.contains("\r\n\r\n") || raw.contains("\n\n") || raw.contains("\r\r"),
+        "the scanner needs a real header/body separator: {raw:?}"
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
@@ -296,6 +335,110 @@ proptest! {
         let text = String::from_utf8_lossy(&bytes).into_owned();
         let outcome = std::panic::catch_unwind(|| parse(&text));
         prop_assert!(outcome.is_ok(), "parser panicked on {} bytes", bytes.len());
+    }
+
+    /// A CRLF injected directly into a header value must not create a new
+    /// field. A legal fold is text, not a header boundary, so it may remain in
+    /// the decoded value; a line that looks like a field must be rejected.
+    #[test]
+    fn crlf_injection_never_survives_as_a_header_value(
+        field in prop::sample::select(vec!["Subject", "To", "Reply-To", "X-Test"]),
+        before in "[A-Za-z0-9 ]{0,80}",
+        after in "[A-Za-z0-9 ]{0,80}",
+        line_ending in prop::sample::select(vec!["\r\n", "\n", "\r"]),
+        injected in prop::sample::select(vec![
+            "Bcc: attacker@example.com",
+            "Content-Type: text/html",
+            "Subject: replaced",
+            "X-Injected: yes",
+        ]),
+    ) {
+        let value = format!("{before}{line_ending}{injected}{after}");
+        let raw = format!("From: a@example.com\r\n{field}: {value}\r\n\r\nbody");
+        let outcome = std::panic::catch_unwind(|| parse(&raw));
+        prop_assert!(outcome.is_ok(), "parser panicked on {raw:?}");
+        if let Ok(message) = outcome.expect("checked above") {
+            scan_header_fields(&message, &raw);
+            prop_assert!(
+                !message.subject.contains(injected),
+                "injected header text became part of the subject: {raw:?}"
+            );
+            prop_assert!(
+                message
+                    .header("X-Injected")
+                    .is_none_or(|value| !value.contains("attacker@example.com")),
+                "injected header became a preserved field: {raw:?}"
+            );
+        }
+    }
+
+    /// Unbalanced and nested comments may stop at the end of the value, but
+    /// must not panic or let text after a comment terminator escape into a
+    /// modelled field.
+    #[test]
+    fn unbalanced_parentheses_are_total_and_never_inject(
+        opens in 0usize..16,
+        closes in 0usize..16,
+        before in "[A-Za-z0-9 ]{0,80}",
+        inside in "[A-Za-z0-9 ]{0,80}",
+        after in "[A-Za-z0-9.@ ]{0,80}",
+    ) {
+        let value = format!("{before}{}{inside}{}{after}", "(".repeat(opens), ")".repeat(closes));
+        let raw = format!(
+            "From: a@example.com\r\nSubject: {value}\r\nTo: {value} <a@example.com>\r\n\r\nbody"
+        );
+        let outcome = std::panic::catch_unwind(|| parse(&raw));
+        prop_assert!(outcome.is_ok(), "parser panicked on {raw:?}");
+        if let Ok(message) = outcome.expect("checked above") {
+            scan_header_fields(&message, &raw);
+        }
+    }
+
+    /// Broken encoded-words include truncated envelopes, bad transfer
+    /// encodings, malformed base64, and valid payloads that decode to CRLF.
+    /// The decoder is total; parse never panics and the payload cannot change
+    /// a field boundary.
+    #[test]
+    fn broken_encoded_words_are_total_and_never_inject(
+        charset in "[A-Za-z0-9._-]{0,24}",
+        encoding in prop::sample::select(vec!["B", "Q", "X", "", "b", "q"]),
+        payload in "[A-Za-z0-9+/=?_ \\t\\r\\n]{0,120}",
+        terminator in prop::sample::select(vec!["?=", "", "?", "?==", " ?= "]),
+        decoded_line_ending in prop::sample::select(vec!["\r\n", "\n", "\r"]),
+        encode_smuggled in any::<bool>(),
+    ) {
+        let line_separator = if encode_smuggled { decoded_line_ending } else { "\u{85}" };
+        let smuggle = format!("{line_separator}Bcc: attacker@example.com");
+        let word = if encode_smuggled {
+            format!("=?UTF-8?B?{}?=", STANDARD.encode(smuggle.as_bytes()))
+        } else {
+            let mut encoded = String::new();
+            for byte in smuggle.bytes() {
+                write!(encoded, "={byte:02X}").expect("writing to a String cannot fail");
+            }
+            format!("=?UTF-8?Q?{encoded}?=")
+        };
+        let broken = format!("=?{charset}?{encoding}?{payload}{terminator}");
+        for (value, valid_word) in [(word, true), (broken, false)] {
+            let raw = format!("From: a@example.com\r\nSubject: {value}\r\n\r\nbody");
+            let outcome = std::panic::catch_unwind(|| parse(&raw));
+            prop_assert!(outcome.is_ok(), "parser panicked on {raw:?}");
+            // Raw CR/LF inside the broken word can fail in any of the parser's
+            // typed layers before RFC 2047 decoding starts.
+            if let Ok(message) = outcome.expect("checked above") {
+                scan_header_fields(&message, &raw);
+                if valid_word {
+                    prop_assert!(
+                        message.subject.contains("Bcc: attacker@example.com"),
+                        "decoded encoded-word lost its payload: {raw:?}"
+                    );
+                }
+                prop_assert!(
+                    message.header("Bcc").is_none(),
+                    "decoded encoded-word created a header field: {raw:?}"
+                );
+            }
+        }
     }
 
     /// RFC 2047 decoding is total and never grows the text pathologically.
