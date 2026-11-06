@@ -91,11 +91,14 @@ fn utf16_with_bom_or_default(bytes: &[u8]) -> &'static Encoding {
 
 /// Canonicalises a charset label: trims, drops quotes, lowercases.
 fn normalise(charset: &str) -> String {
-    charset.trim().trim_matches('"').trim().to_ascii_lowercase()
+    charset
+        .trim_matches(|ch: char| ch.is_whitespace() || ch == '"')
+        .to_ascii_lowercase()
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn utf8_keeps_multibyte_text() {
@@ -255,5 +258,21 @@ mod tests {
         assert_eq!(decode(&[0xD8, 0x00, 0x00, 0x41], "utf-16be"), "\u{FFFD}A");
         // A lone low surrogate is malformed on its own.
         assert_eq!(decode(&[0xDC, 0x00], "utf-16be"), "\u{FFFD}");
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        #[test]
+        fn normalise_is_idempotent(label in any::<String>()) {
+            let once = normalise(&label);
+            let twice = normalise(&once);
+            prop_assert_eq!(twice, once);
+        }
+
+        #[test]
+        fn resolve_is_total_for_arbitrary_labels(label in any::<String>()) {
+            let _ = resolve(&label, &[]);
+        }
     }
 }

@@ -71,6 +71,8 @@ manifest disagree.
   line endings, the 78-byte header limit, the render→parse round trip and `cid:`
   rewriting, and prints the rendered headers.
 
+- **Property and fuzz coverage for charset decoding and label normalization.** Closes #21.
+
 ### Changed
 
 - **Quoted-printable dependency decision documented and pinned.** The maintained `quoted_printable` 0.5.2 candidate is rejected by `cargo deny` because its `0BSD` license is outside the current allowlist, so the local codec remains and its exact 76-column soft-break boundary is covered by tests. Closes #62.

@@ -35,4 +35,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "charset"
+path = "fuzz_targets/charset.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
